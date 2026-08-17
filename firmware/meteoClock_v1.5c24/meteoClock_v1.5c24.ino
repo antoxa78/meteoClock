@@ -10,10 +10,16 @@
 */
 
 /*
-  Время и дата устанавливаются атвоматически при загрузке прошивки (такие как на компьютере)
-  График всех величин за час и за сутки (усреднённые за каждый час)
-  В модуле реального времени стоит батарейка, которая продолжает отсчёт времени после выключения/сброса питания
-  Как настроить время на часах. У нас есть возможность автоматически установить время на время загрузки прошивки, поэтому:
+  Время и дата устанавливаются автоматически при загрузке прошивки (время компиляции, как на компьютере в момент сборки).
+  В модуле реального времени стоит батарейка, которая продолжает отсчёт времени после выключения/сброса питания.
+  Время компиляции отстаёт от реального на время сборки и загрузки прошивки (обычно 10-30 сек).
+  Для точной синхронизации с ПК отправьте в последовательный порт (9600) строку вида:
+    T2026-08-17 14:23:45
+  Пример для Linux (сразу после загрузки прошивки):
+    stty -F /dev/ttyUSB0 9600 raw -echo; printf 'T%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" > /dev/ttyUSB0
+  При RESET_CLOCK = 1 устройство в течение 10 секунд после запуска ждёт эту строку и, если она не пришла, ставит время компиляции.
+  Команда работает и в рабочем режиме в любой момент.
+  Как настроить время на часах:
 	- Ставим настройку RESET_CLOCK на 1
   - Прошиваемся
   - Сразу ставим RESET_CLOCK 0
@@ -80,15 +86,14 @@ byte LEDType = 0;         //  при отсутствии сохранения �
 
 #include <EEPROM.h>
 
-int MAX_ONDATA = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048; // при отсутствии сохранения в EEPROM: максимальные показания графиков исходя из накопленных фактических (но в пределах лимитов) данных вместо указанных пределов, 0 - использовать фиксированные пределы (с)НР
-int VIS_ONDATA = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048; // при отсутствии сохранения в EEPROM: отображение показания графиков, 0 - Не отображать (с)НР
+int MAX_ONDATA = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512; // при отсутствии сохранения в EEPROM: максимальные показания графиков исходя из накопленных фактических (но в пределах лимитов) данных вместо указанных пределов, 0 - использовать фиксированные пределы (с)НР
+int VIS_ONDATA = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512; // при отсутствии сохранения в EEPROM: отображение показания графиков, 0 - Не отображать (с)НР
 
 /* 1 - для графика СО2 часового, 2 - для графика СО2 суточного (с)НР
    4 - для графика влажности часовой, 8 - для графика влажности суточной (с)НР
    16 - для графика температуры часовой, 32 - для графика температуры суточной (с)НР
-   64 - для прогноза дождя часового, 128 - для прогноза дождя суточного (с)НР
-   256 - для графика давления часового, 512 - для графика давления суточного (с)НР
-   1024 - для графика высоты часового, 2048 - для графика высоты суточного (с)НР
+   64 - для графика давления/дождя часового, 128 - для графика давления/дождя суточного (с)НР
+   256 - для графика высоты часового, 512 - для графика высоты суточного (с)НР
    для выборочных графиков значения нужно сложить (с)НР
    например: для изменения пределов у графиков суточной температуры и суточного СО2 складываем 2 + 32 и устанавливаем значение 34 (можно ставить сумму) (с)НР
 */
@@ -102,14 +107,17 @@ int VIS_ONDATA = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048; /
 #define PRESS_MAX 760
 //#define PRESS_MIN -100
 //#define PRESS_MAX 100
+#define RAIN_MIN -100      // пределы графика прогноза дождя при PRESSURE 1 (с)НР
+#define RAIN_MAX 100
 #define CO2_MIN 400
 #define CO2_MAX 2000
 #define ALT_MIN 0
 #define ALT_MAX 1000
 
 // адрес BME280 жёстко задан в файле библиотеки Adafruit_BME280.h
-// стоковый адрес был 0x77, у китайского модуля адрес 0x76.
-// Так что если юзаете не библиотеку из архива - не забудьте поменять
+// адрес BME280: у стоковых модулей 0x77, у китайских 0x76.
+// Если температура/влажность/давление показывают 0 - смените адрес! (с)НР
+#define BME280_ADDR 0x76
 
 // если дисплей не заводится - поменяйте адрес (строка 54)
 
@@ -409,6 +417,13 @@ void drawPres(int dispPres, byte x, byte y) {   // Давление крупно
 }
 
 void drawAlt(float dispAlt, byte x, byte y) {   // Высота крупно на главном экране (с)НР -----------------------------
+  boolean neg = (dispAlt < 0);
+  if (neg) dispAlt = -dispAlt;
+  if (neg) {                    // знак минус для отрицательной высоты (с)НР
+    lcd.setCursor(x, y + 1);
+    lcd.write(45);
+    x += 1;
+  }
   if (dispAlt >= 1000) {
     drawDig((int(dispAlt) % 10000) / 1000, x , y);
     x += 4;
@@ -433,8 +448,20 @@ void drawAlt(float dispAlt, byte x, byte y) {   // Высота крупно н�
 }
 
 void drawTemp(float dispTemp, byte x, byte y) { // Температура крупно на главном экране (с)НР ----------------------------
-  if (dispTemp / 10 == 0) drawDig(10, x, y);
-  else drawDig(dispTemp / 10, x, y);
+  boolean neg = (dispTemp < 0);
+  if (neg) dispTemp = -dispTemp;
+  if (dispTemp / 10 == 0) {
+    if (neg) {
+      lcd.setCursor(x, y + 1);
+      lcd.write(45);          // знак минус для отрицательной температуры (с)НР
+    } else drawDig(10, x, y);
+  } else {
+    if (neg) {
+      lcd.setCursor(x, y + 1);
+      lcd.write(45);
+    }
+    drawDig(dispTemp / 10, x + 1, y);
+  }
   drawDig(int(dispTemp) % 10, x + 4, y);
   drawDig(int(dispTemp * 10.0) % 10, x + 9, y);
 
@@ -524,7 +551,30 @@ void drawData() {                     // выводим дату ---------------
   }
 }
 
-void drawPlot(byte pos, byte row, byte width, byte height, int min_val, int max_val, int *plot_array, String label1, String label2, int stretch) {  // график ---------------------------------
+void printValRight(int val, byte field) {  // вывод значения с выравниванием по правому краю поля (с)НР
+  boolean neg = val < 0;
+  int v = abs(val);
+  byte digits = 1;
+  if (v >= 1000) digits = 4;
+  else if (v >= 100) digits = 3;
+  else if (v >= 10) digits = 2;
+  if (neg) digits++;
+  while (digits < field) {
+    lcd.print(" ");
+    digits++;
+  }
+  lcd.print(val);
+}
+
+void printTemp(float t) {          // вывод температуры с одним знаком после запятой без String (с)НР
+  lcd.print((int)t);
+  lcd.print(".");
+  int tenths = (int)(t * 10.0 + (t < 0 ? -0.5 : 0.5));
+  if (tenths < 0) tenths = -tenths;
+  lcd.print(tenths % 10);
+}
+
+void drawPlot(byte pos, byte row, byte width, byte height, int min_val, int max_val, int *plot_array, const char* label1, const char* label2, int stretch) {  // график ---------------------------------
   int max_value = -32000;
   int min_value = 32000;
 
@@ -565,10 +615,10 @@ void drawPlot(byte pos, byte row, byte width, byte height, int min_val, int max_
   lcd.setCursor(16, 2); lcd.print(plot_array[14]);
   lcd.setCursor(16, 3); lcd.print(min_value);
 #else
-  lcd.setCursor(12, 0); lcd.print(label1);
-  lcd.setCursor(13, 0); lcd.print(max_value);
-  lcd.setCursor(12, 1); lcd.print(label2);
-  lcd.setCursor(13, 1); lcd.print(min_value);
+  lcd.setCursor(11, 0); lcd.print(label1);
+  printValRight(max_value, 4);      // выравнивание по правому краю, чтобы 4-значные значения не переносились на другую строку (с)НР
+  lcd.setCursor(11, 1); lcd.print(label2);
+  printValRight(min_value, 4);
 #endif
   for (byte i = 0; i < width; i++) {                  // каждый столбец параметров
     int fill_val = plot_array[i];
@@ -648,15 +698,23 @@ byte LED_OFF = (255);
 #endif
 
 void setLEDcolor(byte color) {                    // цвет индикатора задается двумя битами на каждый цвет (с)НР
-  analogWrite(LED_R, LED_ON + LED_ON * ((LED_MODE << 1) - 1) * (3 - (color & 3)) / 3);
-  analogWrite(LED_G, LED_ON + LED_ON * ((LED_MODE << 1) - 1) * (3 - ((color & 12) >> 2)) / 3);
-  analogWrite(LED_B, LED_ON + LED_ON * ((LED_MODE << 1) - 1) * (3 - ((color & 48) >> 4)) / 3);
+#if (LED_MODE == 0)
+  // главный катод: 0 - выключен, LED_ON - полная яркость (с)НР
+  analogWrite(LED_R, LED_ON * (color & 3) / 3);
+  analogWrite(LED_G, LED_ON * ((color & 12) >> 2) / 3);
+  analogWrite(LED_B, LED_ON * ((color & 48) >> 4) / 3);
+#else
+  // главный анод: 0 - полная яркость, 255 - выключен (с)НР
+  analogWrite(LED_R, LED_ON + (255 - LED_ON) * (3 - (color & 3)) / 3);
+  analogWrite(LED_G, LED_ON + (255 - LED_ON) * (3 - ((color & 12) >> 2)) / 3);
+  analogWrite(LED_B, LED_ON + (255 - LED_ON) * (3 - ((color & 48) >> 4)) / 3);
+#endif
 }
 
 void setLED() {
 
   if (LED_BRIGHT < 11) {                                     // если ручные установки яркости
-    LED_ON = 255 / 100 * LED_BRIGHT * LED_BRIGHT;
+    LED_ON = map(LED_BRIGHT, 0, 10, 0, LED_BRIGHT_MAX);
   } else {
     checkBrightness();
   }
@@ -670,8 +728,71 @@ void setLED() {
   else setLEDcolor(48);   // синий (если влажность превышает заданный максимум, температура ниже минимума, вероятность осадков выше maxRain)
 }
 
+boolean readSerialLine(char* buf, byte size) {   // неблокирующее чтение строки из порта; true - строка получена (с)НР
+  static byte idx = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (idx > 0) {
+        buf[idx] = 0;
+        idx = 0;
+        return true;
+      }
+    } else if (idx < size - 1) {
+      buf[idx++] = c;
+    }
+  }
+  return false;
+}
+
+boolean setTimeSerial(char* str) {     // разбор команды установки времени с ПК: TYYYY-MM-DD HH:MM:SS (с)НР
+  char* p = str;
+  if (*p == 'T' || *p == 't') p++;
+  if (strlen(p) < 19) return false;
+  if (p[4] != '-' || p[7] != '-' || p[10] != ' ' || p[13] != ':' || p[16] != ':') return false;
+  for (byte i = 0; i < 19; i++) {
+    if (i == 4 || i == 7 || i == 10 || i == 13 || i == 16) continue;
+    if (p[i] < '0' || p[i] > '9') return false;
+  }
+  uint16_t y = (p[0] - '0') * 1000 + (p[1] - '0') * 100 + (p[2] - '0') * 10 + (p[3] - '0');
+  uint8_t mo = (p[5] - '0') * 10 + (p[6] - '0');
+  uint8_t d = (p[8] - '0') * 10 + (p[9] - '0');
+  uint8_t h = (p[11] - '0') * 10 + (p[12] - '0');
+  uint8_t mi = (p[14] - '0') * 10 + (p[15] - '0');
+  uint8_t s = (p[17] - '0') * 10 + (p[18] - '0');
+  if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return false;
+  rtc.adjust(DateTime(y, mo, d, h, mi, s));
+  now = rtc.now();
+  secs = now.second();
+  mins = now.minute();
+  hrs = now.hour();
+  Serial.println(F("TIME SET"));
+  return true;
+}
+
+void serialTick() {                     // проверка команд из порта в рабочем режиме (с)НР
+  char buf[24];
+  if (readSerialLine(buf, sizeof(buf))) setTimeSerial(buf);
+}
+
 void setup() {
   Serial.begin(9600);
+
+  rtc.begin();
+  if (RESET_CLOCK) {                    // ждём точное время с ПК до 10 сек, иначе ставим время компиляции (с)НР
+    char buf[24];
+    unsigned long t = millis();
+    boolean got = false;
+    while (millis() - t < 10000) {
+      if (readSerialLine(buf, sizeof(buf)) && setTimeSerial(buf)) {
+        got = true;
+        break;
+      }
+    }
+    if (!got) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  } else if (rtc.lostPower()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
 
   pinMode(BACKLIGHT, OUTPUT);
   pinMode(LED_COM, OUTPUT);
@@ -741,7 +862,7 @@ void setup() {
   lcd.print(F("BME280... "));
   Serial.print(F("BME280... "));
   delay(50);
-  if (bme.begin(&Wire)) {
+  if (bme.begin(BME280_ADDR, &Wire)) {
     lcd.print(F("OK"));
     Serial.println(F("OK"));
   } else {
@@ -775,7 +896,7 @@ void setup() {
   mhz19.setAutoCalibration(false);
 #endif
   rtc.begin();
-  bme.begin(&Wire);
+  bme.begin(BME280_ADDR, &Wire);
 #endif
 
   bme.setSampling(Adafruit_BME280::MODE_FORCED,
@@ -784,8 +905,7 @@ void setup() {
                   Adafruit_BME280::SAMPLING_X1, // humidity
                   Adafruit_BME280::FILTER_OFF);
 
-  if (RESET_CLOCK || rtc.lostPower())
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  if (RESET_CLOCK) rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // подстраховка, если по какой-то причине время не было установлено в начале setup() (с)НР
   lcd.clear();
   now = rtc.now();
   secs = now.second();
@@ -829,9 +949,12 @@ void setup() {
 }
 
 void loop() {
+  serialTick();                                       // приём команд установки времени с ПК (с)НР
   if (testTimer(brightTimerD, brightTimer)) checkBrightness();  // яркость
   if (testTimer(sensorsTimerD, sensorsTimer)) readSensors();    // читаем показания датчиков с периодом SENS_TIME
+#if (DEBUG == 1)
   Serial.println(dispTemp);
+#endif
 
   if (testTimer(clockTimerD, clockTimer)) clockTick();          // два раза в секунду пересчитываем время и мигаем точками
   plotSensorsTick();                                // тут внутри несколько таймеров для пересчёта графиков (за час, за день и прогноз)
