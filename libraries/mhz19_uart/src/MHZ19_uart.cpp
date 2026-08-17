@@ -12,6 +12,13 @@
 #define WAIT_READ_TIMES	100
 #define WAIT_READ_DELAY	10
 
+// serial command (kept in flash, not in RAM) 
+static const uint8_t getppm[8] PROGMEM			= {0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t zerocalib[8] PROGMEM		= {0xff, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t spancalib[8] PROGMEM		= {0xff, 0x01, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t autocalib_on[8] PROGMEM	= {0xff, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t autocalib_off[8] PROGMEM	= {0xff, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00};
+
 // public
 
 MHZ19_uart::MHZ19_uart(){
@@ -37,11 +44,16 @@ void MHZ19_uart::begin(int rx, int tx){
 #endif
 
 void MHZ19_uart::setAutoCalibration(boolean autocalib){
-	writeCommand( autocalib ? autocalib_on : autocalib_off );
+	uint8_t cmd[MHZ19_uart::REQUEST_CNT];
+	const uint8_t* src = autocalib ? autocalib_on : autocalib_off;
+	for(int i=0; i<MHZ19_uart::REQUEST_CNT; i++) cmd[i] = pgm_read_byte(&src[i]);
+	writeCommand( cmd );
 }
 
 void MHZ19_uart::calibrateZero() {
-	writeCommand( zerocalib );
+	uint8_t cmd[MHZ19_uart::REQUEST_CNT];
+	for(int i=0; i<MHZ19_uart::REQUEST_CNT; i++) cmd[i] = pgm_read_byte(&zerocalib[i]);
+	writeCommand( cmd );
 }
 
 void MHZ19_uart::calibrateSpan(int ppm) {
@@ -49,7 +61,7 @@ void MHZ19_uart::calibrateSpan(int ppm) {
 
 	uint8_t com[MHZ19_uart::REQUEST_CNT];
 	for(int i=0; i<MHZ19_uart::REQUEST_CNT; i++) {
-		com[i] = spancalib[i];
+		com[i] = pgm_read_byte(&spancalib[i]);
 	}
 	com[3] = (uint8_t)(ppm/256);
 	com[4] = (uint8_t)(ppm%256);
@@ -113,7 +125,10 @@ int MHZ19_uart::getSerialData(MHZ19_DATA flg) {
 		buf[i]=0x0;
 	}
 
-	writeCommand(getppm, buf);
+	uint8_t cmd[MHZ19_uart::REQUEST_CNT];
+	for(int i=0; i<MHZ19_uart::REQUEST_CNT; i++) cmd[i] = pgm_read_byte(&getppm[i]);
+
+	writeCommand(cmd, buf);
 	int co2 = 0, co2temp = 0, co2status =  0;
 
 	// parse
