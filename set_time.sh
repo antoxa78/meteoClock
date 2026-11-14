@@ -29,8 +29,15 @@ printf '%s\n' "$TS" >&3
 sleep 1
 printf '%s\n' "$TS" >&3
 
-# Ждём подтверждение от устройства (прошивка отвечает "TIME SET")
-IFS= read -r -t 5 -u 3 RESP 2>/dev/null || RESP=""
+# Ждём подтверждение от устройства (прошивка отвечает "TIME SET").
+# Читаем несколько строк: при включённом DEBUG в порт также идут показания датчиков.
+RESP=""
+END=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$END" ]; do
+  IFS= read -r -t 1 -u 3 LINE 2>/dev/null || break
+  RESP+="$LINE"$'\n'
+  echo "$LINE" | grep -q "TIME SET" && break
+done
 exec 3>&-
 
 if echo "$RESP" | grep -q "TIME SET"; then
