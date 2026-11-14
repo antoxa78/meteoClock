@@ -12,7 +12,7 @@ changes required by the meteoClock firmware:
    3-minute software preheat is unnecessary; without this the display shows
    `-1` after every Arduino reset.
 
-Wiring used by meteoClock v1.7:
+Wiring used by meteoClock v1.8:
 
 - `D2` = Nano RX ← sensor **Tx**
 - `D3` = Nano TX → sensor **Rx**
