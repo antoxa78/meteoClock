@@ -44,6 +44,26 @@ void showMessage(const __FlashStringHelper *msg, byte len) {
   lcd.print(msg);
 }
 
+#if (CO2_SENSOR == 1)
+void calibrateCo2() {                         // zero calibration CO2 with result message
+  readSensors();                              // перед калибровкой берём свежее показание
+  if (dispCO2 >= 350 && dispCO2 <= 500) {
+    boolean ok = mhz19.calibrateToZeroPoint();
+    showMessage(ok ? F("Calibration Success") : F("Calibration Failed"),
+                ok ? 19 : 18);
+    if (ok) {                                 // сохраняем дату калибровки
+      DateTime cal = rtc.now();
+      EEPROM.update(11, cal.day());
+      EEPROM.update(12, cal.month());
+      EEPROM.update(13, cal.year() % 100);
+    }
+  } else {
+    showMessage(F("Need 400 PPM"), 12);
+  }
+  delay(1500);
+}
+#endif
+
 void enterMenuItem() {
   if (podMode == 1) {                         // Save
     if (EEPROM.read(6) != mode0scr) EEPROM.write(6, mode0scr);
@@ -64,29 +84,15 @@ void enterMenuItem() {
     else if (mode == 254) podMode = LED_BRIGHT;
   } else if (podMode == 6) {                  // CO2 zero calibration
 #if (CO2_SENSOR == 1)
-    if (dispCO2 >= 350 && dispCO2 <= 500) {
-      boolean ok = mhz19.calibrateToZeroPoint();
-      showMessage(ok ? F("Calibration Success") : F("Calibration Failed"),
-                  ok ? 19 : 18);
-      if (ok) {                               // сохраняем дату калибровки
-        DateTime cal = rtc.now();
-        EEPROM.update(11, cal.day());
-        EEPROM.update(12, cal.month());
-        EEPROM.update(13, cal.year() % 100);
-      }
-    } else {
-      showMessage(F("Need 400 PPM"), 12);
-    }
-    delay(1500);
+    mode = 251;                               // сначала спрашиваем подтверждение
 #endif
-    mode = 255;
-    podMode = 6;
   }
 }
 
 /*
   mode:
   0 - Main screen
+  251 - CO2 calibration confirmation (yes/no)
   252 - indicator mode (podMode 0-4: CO2, humidity, temperature, rain, pressure)
   253 - LCD brightness (podMode 0-11: 0-100% or auto)
   254 - indicator brightness (podMode 0-11: 0-100% or auto)
@@ -97,7 +103,13 @@ void modesTick() {
   button.tick();
   boolean changeFlag = false;
   if (button.isSingle()) {    // одинарное нажатие: меняем значение / пункт меню
-    if (mode == 0) {
+    if (mode == 251) {        // отмена калибровки CO2
+      showMessage(F("Cancelled"), 9);
+      delay(800);
+      mode = 255;
+      podMode = 6;
+      changeFlag = true;
+    } else if (mode == 0) {
       mode0scr++;                                  // переключение крупного показателя
       if (CO2_SENSOR == 0 && mode0scr == 1) mode0scr++;
       if (mode0scr > 4) mode0scr = 0;
@@ -133,7 +145,14 @@ void modesTick() {
     }
   }
   if (button.isDouble()) {                    // двойное нажатие: вход/выход
-    if (mode == 0) {
+    if (mode == 251) {                        // подтверждение калибровки CO2
+#if (CO2_SENSOR == 1)
+      calibrateCo2();
+#endif
+      mode = 255;
+      podMode = 6;
+      changeFlag = true;
+    } else if (mode == 0) {
       mode = 255;                             // вход в меню
       podMode = 3;
       changeFlag = true;
@@ -153,7 +172,7 @@ void modesTick() {
     changeFlag = true;
   }
 
-  if (button.isHolded()) {    // удержание кнопки (с)НР
+  if (button.isHolded() && mode != 251) {    // удержание кнопки (не подтверждает калибровку)
     //    if ((mode >=252) && (mode <= 254)) {
     //      mode = 255;
     //      podMode = 1;
@@ -252,6 +271,28 @@ void modesTick() {
           }
           break;
       }
+    }
+
+    if (mode == 251) {                        // --------------------- подтверждение калибровки CO2
+#if (DISPLAY_TYPE == 1)
+      lcd.print(F("Calibrate CO2?"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("CO2 now: "));
+      if (dispCO2 >= 0) {
+        lcd.print(dispCO2);
+        lcd.print(F(" ppm"));
+      } else {
+        lcd.print(F("--- ppm"));
+      }
+      lcd.setCursor(0, 2);
+      lcd.print(F("Need 400 ppm"));
+      lcd.setCursor(0, 3);
+      lcd.print(F("2x=YES  1x=NO"));
+#else
+      lcd.print(F("Calibrate CO2?"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("2x=YES 1x=NO"));
+#endif
     }
 
     if (mode == 252) {                        // --------------------- показать  "Реж.индикатора"
@@ -516,22 +557,17 @@ void clockTick() {
   dotFlag = !dotFlag;
   if (dotFlag) {            // каждую секунду пересчёт времени
     secs++;
-    if (secs > 59) {        // каждую минуту
-      secs = 0;
-      mins++;
-      if (mins <= 59 && mode == 0) {
-        drawSensors();      // (с)НР
-      }
-    }
-    if (mins > 59) {        // каждый час
-      // loadClock();        // Обновляем знаки, чтобы русские буквы в днях недели тоже обновились. (с)НР
-      now = rtc.now();
+    if (secs > 59) {        // каждую минуту сверяемся с RTC
+      byte oldHrs = hrs;
+      now = rtc.now();      // убираем накопленный дрейф millis(): раньше сверка была раз в час
       secs = now.second();
       mins = now.minute();
       hrs = now.hour();
-      if (mode == 0) drawSensors();
       if (hrs > 23) hrs = 0;
-      if (mode == 0 && DISPLAY_TYPE) drawData();
+      if (mode == 0) {
+        drawSensors();      // (с)НР
+        if (DISPLAY_TYPE && hrs != oldHrs) drawData();
+      }
     }
     if ((DISP_MODE != 0 && mode == 0) && DISPLAY_TYPE == 1 && !bigDig) {   // Если режим секунд или дни недели по-русски, и 2-х строчные цифры то показывать секунды (с)НР
       lcd.setCursor(15, 1);
