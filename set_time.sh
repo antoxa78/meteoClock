@@ -25,9 +25,9 @@ stty -F "$PORT" 9600 raw -echo 2>/dev/null || {
 exec 3<>"$PORT"
 
 # Ждём READY от прошивки: она печатает его, когда уже может принять время.
-# Старые прошивки READY не печатают — через 8 секунд отправляем в любом случае.
+# Старые прошивки READY не печатают — через 12 секунд отправляем в любом случае.
 READY=0
-END=$((SECONDS + 8))
+END=$((SECONDS + 12))
 while [ "$SECONDS" -lt "$END" ]; do
   IFS= read -r -t 1 -u 3 LINE 2>/dev/null || continue
   if echo "$LINE" | grep -q "READY"; then
