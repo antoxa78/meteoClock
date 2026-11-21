@@ -24,7 +24,14 @@
 #include "Arduino.h"
 
 #include <Adafruit_I2CDevice.h>
+// meteoClock uses the BME280 over I2C only; this drops the unused SPI stack
+// and saves ~1 KB of flash. Set to 0 to restore the original SPI support.
+#ifndef ADAFRUIT_BME280_I2C_ONLY
+#define ADAFRUIT_BME280_I2C_ONLY 1
+#endif
+#if !ADAFRUIT_BME280_I2C_ONLY
 #include <Adafruit_SPIDevice.h>
+#endif
 #include <Adafruit_Sensor.h>
 
 /*!
@@ -212,8 +219,10 @@ public:
 
   // constructors
   Adafruit_BME280();
+#if !ADAFRUIT_BME280_I2C_ONLY
   Adafruit_BME280(int8_t cspin, SPIClass *theSPI = &SPI);
   Adafruit_BME280(int8_t cspin, int8_t mosipin, int8_t misopin, int8_t sckpin);
+#endif
   ~Adafruit_BME280(void);
   bool begin(uint8_t addr = BME280_ADDRESS, TwoWire *theWire = &Wire);
   bool init();
@@ -243,7 +252,9 @@ public:
 
 protected:
   Adafruit_I2CDevice *i2c_dev = NULL; ///< Pointer to I2C bus interface
+#if !ADAFRUIT_BME280_I2C_ONLY
   Adafruit_SPIDevice *spi_dev = NULL; ///< Pointer to SPI bus interface
+#endif
 
   Adafruit_BME280_Temp *temp_sensor = NULL;
   //!< Adafruit_Sensor compat temperature sensor component

@@ -10,25 +10,52 @@
 */
 
 /*
-  Время и дата устанавливаются автоматически при загрузке прошивки (время компиляции, как на компьютере в момент сборки).
-  В модуле реального времени стоит батарейка, которая продолжает отсчёт времени после выключения/сброса питания.
-  Время компиляции отстаёт от реального на время сборки и загрузки прошивки (обычно 10-30 сек).
-  Именно поэтому сразу после прошивки часы могут отставать примерно на 20 секунд.
-  Для точной синхронизации с ПК проще всего запустить ./set_time.sh, либо отправить
+  Время хранится в модуле реального времени DS3231. Батарейка RTC продолжает
+  отсчёт после выключения питания; если она разрядилась, RTC сообщает об этом
+  флагом OSF. В этом случае прошивка НЕ подставляет время компиляции: на экране
+  появляется SET TIME, и часы ждут синхронизации с ПК.
+  Для точной синхронизации проще всего запустить ./set_time.sh, либо отправить
   в последовательный порт (9600) строку вида:
     T2026-08-17 14:23:45
-  Пример для Linux (сразу после загрузки прошивки):
+  Пример для Linux (без перепрошивки, в любой момент):
     stty -F /dev/ttyUSB0 9600 raw -echo; printf 'T%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" > /dev/ttyUSB0
-  При RESET_CLOCK = 1 устройство в течение 10 секунд после запуска ждёт эту строку и, если она не пришла, ставит время компиляции.
-  Команда работает и в рабочем режиме в любой момент.
-  Как настроить время на часах:
-	- Ставим настройку RESET_CLOCK на 1
+  Команда работает и в рабочем режиме, и сразу после включения.
+  Принудительная установка времени компиляции:
+  - Ставим RESET_CLOCK 1
   - Прошиваемся
-  - Пока устройство ждёт время (10 секунд), запускаем ./set_time.sh
-  - Ставим RESET_CLOCK 0
-  - И прошиваемся ещё раз
-  - Всё
-  (Точное время можно выставить через ./set_time.sh в любой момент, не перепрошиваясь.)
+  - Если время с ПК не пришло за 10 секунд, в RTC запишется время компиляции
+  - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
+*/
+
+/* Версия 2.0
+  - Точка росы и индекс жары удалены для экономии flash (~1 КБ)
+  - Добавлены суточные минимумы/максимумы T/H/P/CO2 с автосбросом в полночь
+  - Добавлено давление, приведённое к уровню моря (QNH), с настройкой высоты
+  - Поправки температуры и влажности вынесены в меню (EEPROM), без перепрошивки
+  - Добавлены двухтональный будильник и почасовой сигнал «та-дам» (зуммер D8);
+    во время звука RGB-индикатор мигает синим, будильник автостоп через 60 с
+  - Экран статистики: T/H на 1602, P/CO2 на 1602; на 2004 все четыре строки
+  - Исправлено: drawPres больше не пишет в несуществующую строку 3 на 1602
+  - Исправлен вывод отрицательных температур от -1 до 0 °C
+  - В меню показывается текущее значение пункта.
+  - Меню: 1x — следующий пункт, 2x — предыдущий, удержание — вход.
+  - Редактор: 1x/2x — +/−, удержание — автоповтор с ускорением, значения
+    зациклены, 3x — назад.
+  - Для экономии flash удалены прогноз осадков и дата калибровки CO2
+  - Оформление: меню с маркером `>`, позицией `n/11` и значениями пунктов;
+    выровненные показания и подписи, шкала яркости, подсказки редакторов;
+    экран QNH с давлением/высотой, LED Mode с текущим показанием
+  - Экраны калибровки обновляются без полной очистки (без мерцания)
+  - Локальная библиотека BME280 переведена в I2C-only: освобождено ~1 КБ flash
+  - Итог: см. README (flash/RAM)
+
+  Версия 1.9
+  - При потере питания RTC (села батарейка) время компиляции больше не
+    подставляется: на экране отображается SET TIME до синхронизации с ПК
+  - В мелких часах секунды всегда выводятся двумя цифрами (05, а не " 5")
+  - Поправка температуры применяется драйвером BME280, поэтому давление и
+    влажность рассчитываются по скорректированной температуре
+  - set_time.sh ждёт READY до 12 секунд (учтено сообщение о потере питания RTC)
 */
 
 /* Версия 1.8
@@ -55,10 +82,37 @@
 */
 
 // ------------------------- НАСТРОЙКИ --------------------
-#define RESET_CLOCK 0     // сброс часов на время загрузки прошивки (для модуля с несъёмной батарейкой). Не забудь поставить 0 и прошить ещё раз!
+#define RESET_CLOCK 0     // 1 помещается (~29.8 КБ), но после установки времени верните 0
 #define SENS_TIME 10000   // время обновления показаний сенсоров на экране, миллисекунд
 #define LED_MODE 0        // тип RGB светодиода: 0 - главный катод, 1 - главный анод
 #define START_BIG_CLOCK 1 // после включения/перезагрузки показывать часы крупными цифрами
+
+// -------- будильник / почасовой сигнал --------
+#define BUZZER_PIN 8          // свободный пин D8; см. README, раздел "Buzzer"
+#define BUZZER_PORT PORTB     // D8 = PB0 на ATmega328P (для пассивного пьезо)
+#define BUZZER_BIT PB0
+#define BUZZER_ACTIVE 0       // 0 - пассивный пьезо (таймер; в покое D8 = high-Z)
+                              // 1 - активный, включается HIGH, 2 - активный, включается LOW
+#define BUZZER_BRIDGE 0       // 1 - пьезо между D8 и D11 (противофаза, ~+6 дБ); 0 - D8 и GND
+#define BUZZER_BRIDGE_PIN 11  // D11 = PB3; не использовать вместе с SPI
+#define BUZZER_BRIDGE_PORT PORTB
+#define BUZZER_BRIDGE_BIT PB3
+#define BUZZER_FREQ_IDX 5     // 5 = 4000 Гц (резонанс пьезо); меню частоты удалено для flash
+#define ALARM_MAX_MS 60000UL  // автоотключение будильника, мс
+#define ALARM_STEP_MS 220     // длительность одной фазы двухтонального будильника
+#define CHIME_NOTE1_MS 160    // нота "та" почасового сигнала
+#define CHIME_NOTE2_MS 350    // нота "дам" почасового сигнала
+#define CHIME_NOTE1 0         // 0 = 2000 Гц; индексы таблицы частот
+#define CHIME_NOTE2 1         // 1 = 2400 Гц
+#define TOUCH_BEEP 1          // 1 - короткий писк при нажатии кнопки
+#define TOUCH_BEEP_MS 40      // длительность писка, мс
+
+// -------- значения по умолчанию (используются, если в EEPROM ничего нет) --------
+#define TEMP_CORRECTION -3.1  // поправка температуры, °C (в меню хранится в десятых)
+#define HUMIDITY_CORRECTION 0 // поправка влажности, %
+#define ALTITUDE_DEFAULT 0    // высота над уровнем моря для QNH, м
+#define ALARM_HOUR_DEFAULT 7
+#define ALARM_MIN_DEFAULT 0
 
 // управление яркостью
 byte LED_BRIGHT = 10;         // при отсутствии сохранения в EEPROM: яркость светодиода СО2 (0 - 10) (коэффициент настраиваемой яркости индикатора по умолчанию, если нет сохранения и не автоматическая регулировка (с)НР)
@@ -73,6 +127,7 @@ byte LCD_BRIGHT = 10;         // при отсутствии сохранени�
 
 #define DISP_MODE 1       // в правом верхнем углу отображать: 0 - год, 1 - день недели и секунды
 #define DEBUG 0           // вывод на дисплей лог инициализации датчиков при запуске. Для дисплея 1602 не работает! Но дублируется через порт!
+                          // ВНИМАНИЕ: DEBUG 1 не помещается в 30 720 байт (Nano); для отладки используйте Uno или оставьте 0
 #define CO2_SENSOR 1      // включить или выключить поддержку/вывод с датчика СО2 (1 вкл, 0 выкл)
 #define DISPLAY_TYPE 1    // тип дисплея: 1 - 2004 (большой), 0 - 1602 (маленький)
 #define DISPLAY_ADDR 0x27 // адрес платы дисплея: 0x27 или 0x3f. Если дисплей не работает - смени адрес! На самом дисплее адрес не указан
@@ -95,33 +150,55 @@ byte LCD_BRIGHT = 10;         // при отсутствии сохранени�
 #define normPress 733     // и ниже - желтый
 #define minPress 728      // и ниже - красный   // может, переделать на синий?
 
-#define minRain -50       // и ниже - красный   
-#define normRain -20      // и ниже - желтый
-#define maxRain 50        // и выше - синий
 
-
-byte LEDType = 0;         //  при отсутствии сохранения в EEPROM: привязка индикатора к датчикам: 0 - СО2, 1 - Влажность, 2 - Температура, 3 - Осадки
+byte LEDType = 0;         //  при отсутствии сохранения в EEPROM: 0 - СО2, 1 - Влажность, 2 - Температура, 3 - Давление
 
 #include <EEPROM.h>
+#include <math.h>
+
+// EEPROM layout (v2.0; addresses 0..13 совместимы с v1.9)
+#define EE_MAGIC 0
+#define EE_MODE0 6
+#define EE_BIGDIG 7
+#define EE_LED_BRIGHT 8
+#define EE_LCD_BRIGHT 9
+#define EE_LED_TYPE 10
+#define EE_TEMP_OFF 14        // int8: десятые °C, -50..50
+#define EE_HUM_OFF 15         // int8: %, -20..20
+#define EE_ALTITUDE 16        // uint16: метры, 0..3000 (16,17)
+#define EE_ALARM_HOUR 18
+#define EE_ALARM_MIN 19
+#define EE_FLAGS 20           // bit0 - будильник, bit1 - почасовой сигнал
+#define EE_VERSION 21
+#define EE_MAGIC_VALUE 124
+#define EE_VERSION_VALUE 3
+#define FLAG_ALARM 1
+#define FLAG_CHIME 2
+
+// Настройки, сохраняемые в EEPROM. int16_t выбран специально: все они
+// редактируются одним универсальным редактором через указатель.
+int16_t tempOffset = (int16_t)(TEMP_CORRECTION * 10); // десятые °C
+int16_t humOffset = HUMIDITY_CORRECTION;              // %
+int16_t altitude = ALTITUDE_DEFAULT;                  // м
+int16_t alarmHour = ALARM_HOUR_DEFAULT;
+int16_t alarmMin = ALARM_MIN_DEFAULT;
+byte alarmEditH = 0, alarmEditM = 0;             // временные часы/минуты редактора Alarm
+byte alarmField = 0;                             // 0=часы, 1=минуты, 2=ON/OFF
+boolean alarmEditing = false;
+int16_t alarmEnabled = 0;
+int16_t chimeEnabled = 0;
+byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота (будильник/сигнал)
+
+// Универсальный редактор пунктов меню 7..11
+int16_t *editTarget = NULL;
+int16_t editMin = 0, editMax = 0, editStep = 1, editBigStep = 1;
+int8_t editDirection = 1;       // +1: 1x, -1: 2x; hold repeats this direction
+byte editRepeatCount = 0;
 
 
-/* 1 - для графика СО2 часового, 2 - для графика СО2 суточного (с)НР
-   4 - для графика влажности часовой, 8 - для графика влажности суточной (с)НР
-   16 - для графика температуры часовой, 32 - для графика температуры суточной (с)НР
-   64 - для графика давления/дождя часового, 128 - для графика давления/дождя суточного (с)НР
-   256 - для графика высоты часового, 512 - для графика высоты суточного (с)НР
-   для выборочных графиков значения нужно сложить (с)НР
-   например: для изменения пределов у графиков суточной температуры и суточного СО2 складываем 2 + 32 и устанавливаем значение 34 (можно ставить сумму) (с)НР
-*/
-
-// пределы отображения для графиков
-
-// адрес BME280 жёстко задан в файле библиотеки Adafruit_BME280.h
 // адрес BME280: у стоковых модулей 0x77, у китайских 0x76.
-// Если температура/влажность/давление показывают 0 - смените адрес! (с)НР
+// Если температура/влажность/давление показывают 0 — смените BME280_ADDR.
 #define BME280_ADDR 0x76
-
-// если дисплей не заводится - поменяйте адрес (строка 54)
 
 // пины
 #define BACKLIGHT 10
@@ -151,8 +228,10 @@ RTC_DS3231 rtc;
 DateTime now;
 
 #include <Adafruit_Sensor.h>
+// Локальная копия библиотеки собрана в I2C-only режиме (экономия ~1 КБ flash).
 #include <Adafruit_BME280.h>
-#define TEMP_CORRECTION -0.6        // поправка температуры (°C): показания станции - среднее эталонных термометров
+// Поправка температуры BME280 (°C) хранится в EEPROM и меняется в меню
+// (Temp Offset). Отрицательная — если станция завышает.
 Adafruit_BME280 bme;
 
 #if (CO2_SENSOR == 1)
@@ -165,18 +244,11 @@ Mhz19 mhz19;
 unsigned long sensorsTimer = SENS_TIME;
 unsigned long drawSensorsTimer = SENS_TIME;
 unsigned long clockTimer = 500;
-
-#if (DISPLAY_TYPE == 1)           // для дисплея 2004 график "длиннее", поэтому интервалы времени на сегмент короче (с)НР
-#else
-#endif
-
-unsigned long predictTimer = ((long)10 * 60 * 1000);        // 10 минут
 unsigned long brightTimer = (2000);
 
 unsigned long sensorsTimerD = 0;
 unsigned long drawSensorsTimerD = 0;
 unsigned long clockTimerD = 0;
-unsigned long predictTimerD = 0;
 unsigned long brightTimerD = 0;
 
 #include "GyverButton.h"
@@ -184,21 +256,9 @@ GButton button(BTN_PIN, LOW_PULL, NORM_OPEN);
 
 int8_t hrs, mins, secs;
 byte mode = 0;
-/*
-  0 часы и данные
-  1 график углекислого за час
-  2 график углекислого за сутки
-  3 график влажности за час
-  4 график влажности за сутки
-  5 график температуры за час
-  6 график температуры за сутки
-  7 график дождя/давления за час
-  8 график дождя/давления за сутки
-  9 график высоты за час
-  10 график высоты за сутки
-*/
-
-byte podMode = 1; // подрежим меню(с)НР
+boolean timeValid = true;   // false после потери питания RTC, пока время не выставлено с ПК
+boolean lcdReady = false;   // LCD инициализирован, можно перерисовывать экран из setTimeSerial()
+byte podMode = 1; // пункт меню 1..11
 byte mode0scr = 0;
 /* (с)НР
   0 - Крупно время
@@ -206,7 +266,9 @@ byte mode0scr = 0;
   2 - Крупно температура
   3 - Крупно давление
   4 - Крупно влажность
-  5 - Крупно высота
+  7 - Суточные min/max (2004: все; 1602: T/H)
+  8 - Суточные min/max P/CO2 (только 1602)
+  9 - Крупно QNH (давление на уровне моря)
 */
 boolean bigDig = false;   // true - цифры на главном экране на все 4 строки (для LCD 2004) (с)НР
 
@@ -217,14 +279,32 @@ int dispPres;
 int dispCO2 = -1;
 boolean co2Gate = true;              // true = показывать "---" (прогрев/ошибка/перегрузка)
 #define CO2_WARMUP_MS 300000UL       // 5 минут прогрева после включения
-int dispRain;
 
-// массивы графиков (byte + коэффициент, чтобы показания влезли в байт) (с)НР
-int delta;
-uint32_t pressure_array[6];
-uint32_t sumX, sumY, sumX2, sumXY;
-float a, b;
-//byte time_array[6];
+// computed weather values
+float stationHpa = 0;                // абсолютное давление, hPa
+int dispQnh = 0;                     // давление на уровне моря, mmHg
+boolean bmeOk = false;               // последнее чтение BME280 достоверно
+
+// суточные минимумы/максимумы (сбрасываются при смене даты)
+byte statsDay = 0;
+boolean statTempOk = false, statHumOk = false, statPresOk = false, statCO2Ok = false;
+float statTempMin = 0, statTempMax = 0;
+byte statHumMin = 0, statHumMax = 0;
+int statPresMin = 0, statPresMax = 0;
+int statCO2Min = 0, statCO2Max = 0;
+
+// будильник / почасовой сигнал
+boolean alarmActive = false;
+boolean chimeActive = false;
+byte alarmPhase = 0;
+byte chimeStep = 0;
+boolean touchBeepActive = false;
+unsigned long touchBeepStart = 0;
+boolean ignoreClick = false;          // проглотить клик, которым остановили будильник
+unsigned long alarmStart = 0;
+unsigned long chimeStart = 0;
+byte alarmDoneDay = 0;
+byte lastChimeHour = 255;
 
 /*
   Характеристики датчика BME:
@@ -241,8 +321,7 @@ float a, b;
   Давление: +-1 Па
 */
 
-// символы
-// график
+// символы для крупных цифр
 byte row5[8] = {0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};   // в т.ч. для четырехстрочных цифр 2, 3, 4, 5, 6, 8, 9, 0 (с)НР
 byte row3[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111};   // в т.ч. для двустрочной цифры 0, для четырехстрочных цифр 2, 3, 4, 5, 6, 8, 9 (с)НР
 byte row2[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111};   // в т.ч. для двустрочной цифры 4 (с)НР
@@ -360,10 +439,9 @@ void drawPPM(int dispCO2, byte x, byte y) {     // Уровень СО2 круп
   if (co2Gate) {
     lcd.setCursor(x, y);
     lcd.print(F("---"));
+    for (byte i = 4; i < 16; i += 4) drawDig(10, x + i, y);
+#if (DISPLAY_TYPE == 0)
     lcd.setCursor(15, 0);
-#if (DISPLAY_TYPE == 1)
-    lcd.print(F("ppm"));
-#else
     lcd.print(F("p"));
 #endif
     return;
@@ -373,11 +451,9 @@ void drawPPM(int dispCO2, byte x, byte y) {     // Уровень СО2 круп
   drawDig((dispCO2 % 1000) / 100, x + 4, y);
   drawDig((dispCO2 % 100) / 10, x + 8, y);
   drawDig(dispCO2 % 10 , x + 12, y);
+#if (DISPLAY_TYPE == 0)
   lcd.setCursor(15, 0);
-#if (DISPLAY_TYPE == 1)
-  lcd.print("ppm");
-#else
-  lcd.print("p");
+  lcd.print(F("p"));
 #endif
 }
 
@@ -386,11 +462,34 @@ void drawPres(int dispPres, byte x, byte y) {   // Давление крупно
   drawDig((dispPres % 100) / 10, x + 4, y);
   drawDig(dispPres % 10 , x + 8, y);
   lcd.setCursor(x + 11, 1);
-  if (bigDig) lcd.setCursor(x + 11, 3);
-  lcd.print("mm");
+  if (bigDig && DISPLAY_TYPE == 1) lcd.setCursor(x + 11, 3);
+  lcd.print(F("mmHg"));
+}
+
+void drawPresQnh(int dispPres, byte x, byte y) { // QNH: 4 цифры, чтобы 1000+ mmHg не обрезалось
+#if (DISPLAY_TYPE == 1)
+  drawDig(dispPres < 1000 ? 10 : (dispPres / 1000) % 10, x, y);
+  drawDig((dispPres / 100) % 10, x + 4, y);
+  drawDig((dispPres / 10) % 10, x + 8, y);
+  drawDig(dispPres % 10, x + 12, y);
+  lcd.setCursor(16, bigDig ? 3 : 1);
+  lcd.print(F("QNH"));
+#else
+  drawDig(dispPres < 1000 ? 10 : (dispPres / 1000) % 10, x, y);
+  drawDig((dispPres / 100) % 10, x + 3, y);
+  drawDig((dispPres / 10) % 10, x + 6, y);
+  drawDig(dispPres % 10, x + 9, y);
+  lcd.setCursor(12, 1);
+  lcd.print(F("QNH"));
+#endif
 }
 
 void drawTemp(float dispTemp, byte x, byte y) { // Температура крупно на главном экране (с)НР ----------------------------
+  if (isnan(dispTemp) || dispTemp > 900 || dispTemp < -900) {
+    lcd.setCursor(x, y);
+    lcd.print(F("--.-"));
+    return;
+  }
   boolean neg = (dispTemp < 0);
   if (neg) dispTemp = -dispTemp;
   byte shift = (neg && dispTemp >= 10) ? 1 : 0;
@@ -416,10 +515,12 @@ void drawTemp(float dispTemp, byte x, byte y) { // Температура кру
   if (bigDig && DISPLAY_TYPE == 1) {
     lcd.setCursor(px, y + 3);
     lcd.write(1);             // десятичная точка
+    if (!shift) { lcd.setCursor(px + 1, y + 3); lcd.print(' '); }
   }
   else {
     lcd.setCursor(px, y + 1);
     lcd.write(0B10100001);    // десятичная точка
+    if (!shift) { lcd.setCursor(px + 1, y + 1); lcd.print(' '); }
   }
   lcd.setCursor(x + 13, y);
   lcd.write(223);             // градусы
@@ -457,10 +558,14 @@ static const char *dayNames[] = {"Su","Mo","Tu","We","Th","Fr","Sa"};
 
 
 void drawData() {                     // выводим дату -------------------------------------------------------------
-  int Y = 0;
-  if (DISPLAY_TYPE == 1 && mode0scr == 1) Y = 2;
+  if (mode0scr >= 7) return;          // экраны статистики и QNH занимают весь дисплей
   if (!bigDig) {              // если 4-х строчные цифры, то дату, день недели (и секунды) не пишем - некуда (с)НР
-    lcd.setCursor(15, 0 + Y);
+    if (!timeValid) {         // после потери питания RTC дата недостоверна
+      lcd.setCursor(15, 0); lcd.print(F("     "));
+      lcd.setCursor(15, 1); lcd.print(F("     "));
+      return;
+    }
+    lcd.setCursor(15, 0);
     if (now.day() < 10) lcd.print(0);
     lcd.print(now.day());
     lcd.print(".");
@@ -478,7 +583,6 @@ void drawData() {                     // выводим дату ---------------
       lcd.setCursor(18, 1);
       int dayofweek = now.dayOfTheWeek();
       lcd.print(dayNames[dayofweek]);
-      // if (hrs == 0 && mins == 0 && secs <= 1) loadClock();   // Обновляем знаки, чтобы русские буквы в днях недели тоже обновились. (с)НР
     }
   }
 }
@@ -498,12 +602,29 @@ void printValRight(int val, byte field) {  // вывод значения с в�
   lcd.print(val);
 }
 
+void printTempField(float t, byte width) { // температура с одним знаком, опционально по правому краю
+  if (isnan(t) || t > 900 || t < -900) {
+    byte n = 4;                            // "--.-"
+    while (n < width) { lcd.print(' '); n++; }
+    lcd.print(F("--.-"));
+    return;
+  }
+  boolean neg = (t < 0);
+  if (neg) t = -t;
+  int whole = (int)t;
+  int tenths = (int)((t - whole) * 10.0 + 0.5);
+  if (tenths > 9) { whole++; tenths = 0; }
+  byte len = (whole >= 100 ? 3 : whole >= 10 ? 2 : 1) + 2;
+  if (neg) len++;
+  while (len < width) { lcd.print(' '); len++; }
+  if (neg) lcd.print('-');
+  lcd.print(whole);
+  lcd.print('.');
+  lcd.print(tenths);
+}
+
 void printTemp(float t) {          // вывод температуры с одним знаком после запятой без String (с)НР
-  lcd.print((int)t);
-  lcd.print(".");
-  int tenths = (int)(t * 10.0 + (t < 0 ? -0.5 : 0.5));
-  if (tenths < 0) tenths = -tenths;
-  lcd.print(tenths % 10);
+  printTempField(t, 0);
 }
 
 void loadClock() {
@@ -529,10 +650,8 @@ void loadClock() {
 
 #if (LED_MODE == 0)
 byte LED_ON = (LED_BRIGHT_MAX);
-byte LED_OFF = (0);
 #else
 byte LED_ON = (255 - LED_BRIGHT_MAX);
-byte LED_OFF = (255);
 #endif
 
 void setLEDcolor(byte color) {                    // цвет индикатора задается двумя битами на каждый цвет (с)НР
@@ -570,10 +689,10 @@ void setLED() {
 
   // ниже задается цвет индикатора в зависимости от назначенного сенсора: красный, желтый, зеленый, синий (с)НР
 
-  if ((dispCO2 >= maxCO2) && LEDType == 0 || (dispHum <= minHum) && LEDType == 1 || (dispTemp >= maxTemp) && LEDType == 2 || (dispRain <= minRain) && LEDType == 3 || (dispPres <= minPress) && LEDType == 4) setLEDcolor(3);   // красный
-  else if ((dispCO2 >= normCO2) && LEDType == 0 || (dispHum <= normHum) && LEDType == 1 || (dispTemp >= normTemp) && LEDType == 2 || (dispRain <= normRain) && LEDType == 3 || (dispPres <= normPress) && LEDType == 4) setLEDcolor(3 + 8);   // желтый
-  else if (LEDType == 0 || (dispHum <= maxHum) && LEDType == 1 || (dispTemp >= minTemp) && LEDType == 2 || (dispRain <= maxRain) && LEDType == 3 || LEDType == 4) setLEDcolor(12);    // зеленый
-  else setLEDcolor(48);   // синий (если влажность превышает заданный максимум, температура ниже минимума, вероятность осадков выше maxRain)
+  if (((dispCO2 >= maxCO2) && LEDType == 0) || ((dispHum <= minHum) && LEDType == 1) || ((dispTemp >= maxTemp) && LEDType == 2) || ((dispPres <= minPress) && LEDType == 3)) setLEDcolor(3);   // красный
+  else if (((dispCO2 >= normCO2) && LEDType == 0) || ((dispHum <= normHum) && LEDType == 1) || ((dispTemp >= normTemp) && LEDType == 2) || ((dispPres <= normPress) && LEDType == 3)) setLEDcolor(3 + 8);   // желтый
+  else if ((LEDType == 0) || ((dispHum <= maxHum) && LEDType == 1) || ((dispTemp >= minTemp) && LEDType == 2) || (LEDType == 3)) setLEDcolor(12);    // зеленый
+  else setLEDcolor(48);   // синий (влажность выше максимума или температура ниже минимума)
 }
 
 boolean readSerialLine(char* buf, byte size) {   // неблокирующее чтение строки из порта; true - строка получена (с)НР
@@ -614,6 +733,15 @@ boolean setTimeSerial(char* str) {     // разбор команды устан
   secs = now.second();
   mins = now.minute();
   hrs = now.hour();
+  timeValid = true;
+  lastChimeHour = 255;
+  alarmDoneDay = 0;
+  statsReset();                         // суточные min/max начинаем от нового времени
+  if (lcdReady && mode == 0) {          // сразу убираем "SET TIME" с экрана
+    loadClock();
+    drawSensors();
+    if (DISPLAY_TYPE == 1) drawData();
+  }
   Serial.println(F("TIME SET"));
   return true;
 }
@@ -625,6 +753,8 @@ void serialTick() {                     // проверка команд из п
 
 void setup() {
   Serial.begin(9600);
+  button.setTimeout(350);       // hold enters/repeats a bit faster
+  button.setStepTimeout(80);    // auto-repeat interval
 #if (RESET_CLOCK == 1)
   Serial.println(F("READY"));           // можно присылать время: setup его ждёт
 #endif
@@ -642,7 +772,11 @@ void setup() {
     }
     if (!got) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   } else if (rtc.lostPower()) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // Батарейка RTC разрядилась или модуль долго был без питания.
+    // Не подставляем время компиляции: оно вводит в заблуждение.
+    // Показываем SET TIME, пока время не придёт с ПК через set_time.sh.
+    timeValid = false;
+    Serial.println(F("RTC lost power: time is not set"));
   }
 
   pinMode(BACKLIGHT, OUTPUT);
@@ -652,16 +786,13 @@ void setup() {
   pinMode(LED_B, OUTPUT);
   setLEDcolor(0);
 
+  pinMode(BUZZER_PIN, OUTPUT);
+  buzzerOff();
+
   digitalWrite(LED_COM, LED_MODE);
   analogWrite(BACKLIGHT, LCD_BRIGHT_MAX);
 
-  if (EEPROM.read(0) == 124) {      // если было сохранение настроек, то восстанавливаем их (с)НР
-    mode0scr = EEPROM.read(6);
-    bigDig = EEPROM.read(7);
-    LED_BRIGHT = EEPROM.read(8);
-    LCD_BRIGHT = EEPROM.read(9);
-    LEDType = EEPROM.read(10);
-  }
+  loadSettings();                    // EEPROM: старые адреса совместимы с v1.9
 
 #if (START_BIG_CLOCK == 1)
   mode0scr = 0;                     // после включения всегда показываем крупные часы
@@ -671,8 +802,14 @@ void setup() {
   lcd.init();
   lcd.backlight();
   lcd.clear();
-  lcd.setCursor(0, 0); lcd.print(F("  MeteoClock"));
-  lcd.setCursor(0, 1); lcd.print(F("     v1.8"));
+  lcdReady = true;
+#if (DISPLAY_TYPE == 1)
+  lcd.setCursor(5, 0); lcd.print(F("MeteoClock"));
+  lcd.setCursor(8, 1); lcd.print(F("v2.0"));
+#else
+  lcd.setCursor(3, 0); lcd.print(F("MeteoClock"));
+  lcd.setCursor(6, 1); lcd.print(F("v2.0"));
+#endif
   delay(1200);
   lcd.clear();
 
@@ -754,7 +891,7 @@ void setup() {
   mhz19.begin(&co2Serial);
   mhz19.disableAutoBaseCalibration();
 #endif
-  rtc.begin();
+  // rtc.begin() уже вызван выше — повторный вызов не нужен
   bme.begin(BME280_ADDR, &Wire);
 #endif
 
@@ -763,29 +900,35 @@ void setup() {
                   Adafruit_BME280::SAMPLING_X1, // pressure
                   Adafruit_BME280::SAMPLING_X1, // humidity
                   Adafruit_BME280::FILTER_OFF);
+  // Поправка применяется драйвером, поэтому давление и влажность тоже
+  // рассчитываются по скорректированной температуре. Значение берётся из EEPROM.
+  applyTempOffset();
 
   // Здесь нельзя повторно ставить время компиляции: это перезаписывало точное
   // время, полученное из порта в начале setup(), и часы отставали на 10-30 секунд.
+  if (!timeValid) {                   // RTC потерял питание: объясняем, что время надо выставить
+    lcd.clear();
+#if (DISPLAY_TYPE == 1)
+    lcd.setCursor(0, 0); lcd.print(F("RTC lost power"));
+    lcd.setCursor(0, 1); lcd.print(F("Time is not set"));
+    lcd.setCursor(0, 2); lcd.print(F("Run set_time.sh"));
+    lcd.setCursor(0, 3); lcd.print(F("or send T... via USB"));
+#else
+    lcd.setCursor(0, 0); lcd.print(F("RTC lost power"));
+    lcd.setCursor(0, 1); lcd.print(F("Set time via USB"));
+#endif
+    delay(2500);
+  }
   lcd.clear();
   now = rtc.now();
   secs = now.second();
   mins = now.minute();
   hrs = now.hour();
 
-  bme.takeForcedMeasurement();
-  uint32_t Pressure = bme.readPressure();
-  for (byte i = 0; i < 6; i++) {          // счётчик от 0 до 5
-    pressure_array[i] = Pressure; // забить весь массив текущим давлением
-    //time_array[i] = i;                    // забить массив времени числами 0 - 5
-  }
-
-
-  // заполняем графики текущим значением
   readSensors();
 
   if (DISPLAY_TYPE == 1) drawData();
   loadClock();
-  // readSensors();
   drawSensors();
 
   Serial.println(F("READY"));           // инициализация завершена, можно присылать время
@@ -793,6 +936,7 @@ void setup() {
 
 void loop() {
   serialTick();                                       // приём команд установки времени с ПК (с)НР
+  tickBuzzer();                                       // будильник / почасовой сигнал
   if (testTimer(brightTimerD, brightTimer)) checkBrightness();  // яркость
   if (testTimer(sensorsTimerD, sensorsTimer)) readSensors();    // читаем показания датчиков с периодом SENS_TIME
 #if (DEBUG == 1)
@@ -800,7 +944,6 @@ void loop() {
 #endif
 
   if (testTimer(clockTimerD, clockTimer)) clockTick();          // два раза в секунду пересчитываем время и мигаем точками
-  plotSensorsTick();                                // тут внутри несколько таймеров для пересчёта графиков (за час, за день и прогноз)
   modesTick();                                      // тут ловим нажатия на кнопку и переключаем режимы
   if (mode == 0) {                                  // в режиме "главного экрана"
     if (testTimer(drawSensorsTimerD, drawSensorsTimer)) drawSensors();  // обновляем показания датчиков на дисплее с периодом SENS_TIME

@@ -42,6 +42,7 @@ Adafruit_BME280::Adafruit_BME280() {}
  *   @param  *theSPI
  *           optional SPI object
  */
+#if !ADAFRUIT_BME280_I2C_ONLY
 Adafruit_BME280::Adafruit_BME280(int8_t cspin, SPIClass *theSPI) {
   spi_dev = new Adafruit_SPIDevice(cspin, 1000000, SPI_BITORDER_MSBFIRST,
                                    SPI_MODE0, theSPI);
@@ -58,11 +59,14 @@ Adafruit_BME280::Adafruit_BME280(int8_t cspin, int8_t mosipin, int8_t misopin,
                                  int8_t sckpin) {
   spi_dev = new Adafruit_SPIDevice(cspin, sckpin, misopin, mosipin);
 }
+#endif
 
 Adafruit_BME280::~Adafruit_BME280(void) {
+#if !ADAFRUIT_BME280_I2C_ONLY
   if (spi_dev) {
     delete spi_dev;
   }
+#endif
   if (i2c_dev) {
     delete i2c_dev;
   }
@@ -84,18 +88,22 @@ Adafruit_BME280::~Adafruit_BME280(void) {
  *   @returns true on success, false otherwise
  */
 bool Adafruit_BME280::begin(uint8_t addr, TwoWire *theWire) {
+#if !ADAFRUIT_BME280_I2C_ONLY
   if (spi_dev == NULL) {
+#endif
     // I2C mode
     if (i2c_dev)
       delete i2c_dev;
     i2c_dev = new Adafruit_I2CDevice(addr, theWire);
     if (!i2c_dev->begin())
       return false;
+#if !ADAFRUIT_BME280_I2C_ONLY
   } else {
     // SPI mode
     if (!spi_dev->begin())
       return false;
   }
+#endif
   return init();
 }
 
@@ -177,10 +185,13 @@ void Adafruit_BME280::write8(byte reg, byte value) {
   if (i2c_dev) {
     buffer[0] = reg;
     i2c_dev->write(buffer, 2);
-  } else {
+  }
+#if !ADAFRUIT_BME280_I2C_ONLY
+  else {
     buffer[0] = reg & ~0x80;
     spi_dev->write(buffer, 2);
   }
+#endif
 }
 
 /*!
@@ -193,10 +204,13 @@ uint8_t Adafruit_BME280::read8(byte reg) {
   if (i2c_dev) {
     buffer[0] = uint8_t(reg);
     i2c_dev->write_then_read(buffer, 1, buffer, 1);
-  } else {
+  }
+#if !ADAFRUIT_BME280_I2C_ONLY
+  else {
     buffer[0] = uint8_t(reg | 0x80);
     spi_dev->write_then_read(buffer, 1, buffer, 1);
   }
+#endif
   return buffer[0];
 }
 
@@ -211,10 +225,13 @@ uint16_t Adafruit_BME280::read16(byte reg) {
   if (i2c_dev) {
     buffer[0] = uint8_t(reg);
     i2c_dev->write_then_read(buffer, 1, buffer, 2);
-  } else {
+  }
+#if !ADAFRUIT_BME280_I2C_ONLY
+  else {
     buffer[0] = uint8_t(reg | 0x80);
     spi_dev->write_then_read(buffer, 1, buffer, 2);
   }
+#endif
   return uint16_t(buffer[0]) << 8 | uint16_t(buffer[1]);
 }
 
@@ -255,10 +272,13 @@ uint32_t Adafruit_BME280::read24(byte reg) {
   if (i2c_dev) {
     buffer[0] = uint8_t(reg);
     i2c_dev->write_then_read(buffer, 1, buffer, 3);
-  } else {
+  }
+#if !ADAFRUIT_BME280_I2C_ONLY
+  else {
     buffer[0] = uint8_t(reg | 0x80);
     spi_dev->write_then_read(buffer, 1, buffer, 3);
   }
+#endif
 
   return uint32_t(buffer[0]) << 16 | uint32_t(buffer[1]) << 8 |
          uint32_t(buffer[2]);
