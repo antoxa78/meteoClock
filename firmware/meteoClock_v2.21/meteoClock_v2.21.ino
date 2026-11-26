@@ -43,14 +43,14 @@
   - На 2004 в мелком режиме при CO2 >= 1000 ppm между "%" и "ppm" есть пробел
   - Во время Chime RGB-индикатор меняет цвет случайным образом на каждой ноте
   - Предупреждение CO2 >= 1200 ppm: короткий писк 150 мс раз в 2 минуты;
-    отключается пятым экраном LED Mode (CO2 Beep ON/OFF), флаг в EEPROM
+    отключается удержанием в LED Mode (статус B:ON/B:OFF), флаг в EEPROM
   - Пункт LCD Br удалён: яркость подсветки задаётся #define LCD_BRIGHT
     (0..10, 11 = авто); меню сокращено до 7 пунктов
   - Оптимизация: убраны stationHpa, лишние поля редактора, мёртвая запись
     EE_TEMP_OFF; упрощены setLED/setLEDcolor/drawHum; освобождено ~716 байт
-  - Flash 30 426 байт (99%), RAM 913 байт (для 2004)
-    Для 1602 — 28 154 байта, RAM 875 байт
-    RESET_CLOCK 1 — 28 884 байта, RAM 892 байта
+  - Flash 30 298 байт (98%), RAM 913 байт (для 2004)
+    Для 1602 — 28 118 байт, RAM 875 байт
+    RESET_CLOCK 1 — 28 754 байта, RAM 892 байта
 
   Версия 2.20 (полировка интерфейса)
   - Заставка показывает актуальную версию (раньше оставалась v2.18)
@@ -876,7 +876,7 @@ void setup() {
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
   lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.21"));
-  lcd.setCursor(0, 1); lcd.print(F("Compiled ")); lcd.print(F(__DATE__));
+  lcd.setCursor(0, 1); lcd.print(F("Compiled:")); lcd.print(F(__DATE__));
   lcd.setCursor(3, 2); lcd.print(F("Time ")); lcd.print(F(__TIME__));
 #else
   lcd.setCursor(0, 0); lcd.print(F("v2.21")); lcd.print(F(__DATE__));

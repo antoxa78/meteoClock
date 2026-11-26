@@ -890,28 +890,12 @@ void drawBrightnessBar(byte b, byte row) {
 }
 
 void drawIndicatorMode() {
-  if (podMode == 4) {                   // пятый экран LED Mode: предупреждение CO2
-    lcd.setCursor(0, 0);
-    lcd.print(F("CO2 Beep"));
-#if (DISPLAY_TYPE == 1)
-    lcd.setCursor(16, 0);
-    lcd.print(F("EDIT"));
-    lcd.setCursor(2, 1);
-    lcd.print(co2BeepEnabled ? F("ON") : F("OFF"));
-    lcd.setCursor(0, 2);
-    lcd.print(F("CO2 warning beep"));
-    lcd.setCursor(0, 3);
-    lcd.print(F("1x change  2x back"));
-#else
-    lcd.setCursor(0, 1);
-    lcd.print(co2BeepEnabled ? F("ON") : F("OFF"));
-#endif
-    return;
-  }
   LEDType = podMode;
   if (!alarmActive && !chimeActive) setLED();   // сразу показать цвет нового режима
   lcd.setCursor(0, 0);
   lcd.print(F("LED Mode"));
+  lcd.setCursor(10, 0);
+  lcd.print(co2BeepEnabled ? F("B:ON") : F("B:OFF"));
 #if (DISPLAY_TYPE == 1)
   lcd.setCursor(16, 0);
   lcd.print(F("EDIT"));
@@ -931,7 +915,7 @@ void drawIndicatorMode() {
     case 3: lcd.print(dispPres); lcd.print(F(" mmHg")); break;
   }
   lcd.setCursor(0, 3);
-  lcd.print(F("1x change  2x back"));
+  lcd.print(F("1x chg 2x back H=bip"));
 #endif
 }
 
@@ -1045,16 +1029,10 @@ void modesTick() {
       }
     } else if (mode >= 252) {
       if (mode == 252) {
-        if (podMode == 4) {
-          co2BeepEnabled = !co2BeepEnabled;
-        } else {
-          podMode++;
-          if (podMode > 4) podMode = 0;
-          if (podMode <= 3) {
-            LEDType = podMode;
-            setLED();
-          }
-        }
+        podMode++;
+        if (podMode > 3) podMode = 0;
+        LEDType = podMode;
+        setLED();
         changeFlag = true;
       } else {
         podMode++;
@@ -1143,7 +1121,10 @@ void modesTick() {
           holdStep = true;
         }
         break;
-      case 252:       // реж. индикатора
+      case 252:       // реж. индикатора: удержание переключает писк CO2
+        co2BeepEnabled = !co2BeepEnabled;
+        changeFlag = true;
+        break;
       case 254:       // ярк. индикатора
         returnToMenu();
         break;
