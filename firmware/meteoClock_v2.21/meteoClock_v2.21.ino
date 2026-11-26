@@ -27,24 +27,78 @@
   - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
 */
 
-/* Версия 2.15
-  - Старый модем (4): более естественная последовательность, ~7,2 секунды
-  - При запуске играет старый модем (chime 4) вместо скрытой мелодии
+/* Версия 2.21 (удобный редактор будильника)
+  - Редактор Alarm: поля только Часы -> Минуты -> ON/OFF (поле SET убрано)
+  - 1x: +1 к полю (на ON/OFF переключает); удержание: быстрый автоповтор
+    (минуты после ~8 шагов идут по 5; на ON/OFF удержание не действует);
+    2x: следующее поле, на ON/OFF — готово
+  - Изменение времени само включает будильник (раньше можно было забыть ON)
+  - Выход из редактора сохраняет будильник в EEPROM (отдельный Save не нужен)
+  - При автоповторе перерисовывается только строка с полями: без мерцания;
+    строка полей имеет фиксированную ширину и на 1602
+  - Подсказка внизу меняется в зависимости от выбранного поля
+  - Beethoven 5th (16) удлинён до ~6,4 с: тема повторяется дважды
+  - Добавлены 17 Time signal (шесть пипов), 18 Sugar Plum Fairy,
+    19 Morning Mood, 20 Carol of the Bells; всего 21 сигнал 0..20 + Random
+  - На 2004 в мелком режиме при CO2 >= 1000 ppm между "%" и "ppm" есть пробел
+  - Во время Chime RGB-индикатор меняет цвет случайным образом на каждой ноте
+  - Предупреждение CO2 >= 1200 ppm: короткий писк 150 мс раз в 2 минуты;
+    отключается пятым экраном LED Mode (CO2 Beep ON/OFF), флаг в EEPROM
+  - Пункт LCD Br удалён: яркость подсветки задаётся #define LCD_BRIGHT
+    (0..10, 11 = авто); меню сокращено до 7 пунктов
+  - Оптимизация: убраны stationHpa, лишние поля редактора, мёртвая запись
+    EE_TEMP_OFF; упрощены setLED/setLEDcolor/drawHum; освобождено ~716 байт
+  - Flash 30 426 байт (99%), RAM 913 байт (для 2004)
+    Для 1602 — 28 154 байта, RAM 875 байт
+    RESET_CLOCK 1 — 28 884 байта, RAM 892 байта
+
+  Версия 2.20 (полировка интерфейса)
+  - Заставка показывает актуальную версию (раньше оставалась v2.18)
+  - Экран min/max: столбцы выровнены (разделитель "/" в одной колонке),
+    температура с знаком градуса, давление с единицей mmHg
+  - Редактор будильника: ширина строки не «прыгает» при смене поля
+    (под скобки зарезервировано место); в заголовке иконка колокольчика
+  - Редактор Chime: иконка ноты и значение "Sound N" вместо голой цифры;
+    значение выровнено с меню (колонка 2)
+  - Save показывает сообщение "Settings saved" перед возвратом на главный экран
+  - Экраны яркости/LED Mode: метка EDIT вместо SET, шкала выровнена со значением
+  - LED Mode: в строке значения убрано дублирование названия датчика
+  - CO2 Calibration: понятная подсказка "400ppm? 2x=Y 1x=N", "Need 400 ppm"
+  - Температура в боковой колонке округляется, а не отбрасывает десятые
+  - Влажность ниже 10% на крупном экране: "5", а не "05"
+  - Flash 29 816 байт (97%), RAM 909 байт (для 2004)
+    Для 1602 — 27 664 байта, RAM 871 байт
+    RESET_CLOCK 1 — 28 678 байт, RAM 889 байт
+
+  Версия 2.19
+  - Удалены экран QNH, расчёт давления на уровне моря и пункт меню Altitude
+  - Давление на главном экране — абсолютное (станционное), как и раньше
+  - Меню сокращено до 8 пунктов; EEPROM-поле высоты больше не используется
+  - Удалён отдельный редактор высоты (3x назад, автоповтор)
+  - Добавлены сигналы 13 Westminster short, 14 Westminster full (Big Ben),
+    15 Cuckoo, 16 Beethoven 5th; всего 17 сигналов 0..16 + Random
+  - Остальное — как в v2.18
+  - Flash 29 672 байта (96%), RAM 908 байт (для 2004)
+    Для 1602 — 27 524 байта, RAM 870 байт
+    RESET_CLOCK 1 — 28 542 байта, RAM 889 байт
+
+  Версия 2.18
+  - Chime 8 (Sparkle) удалён; Jumping (Nokia) добавлен как 12
+  - Grande Valse (Nokia tune) — 11, оригинальный темп, ~3,6 секунды
+  - Jumping (Nokia) — 12, ~2,4 секунды
+  - Старый модем (4): ~7,2 секунды, играет при запуске
   - Jingle Bells (3): первая половина песни, включая "Oh what fun...", ~8,2 с
-  - Chime 12 (Ode to Joy) удалён; оставшиеся перенумерованы 0..12
-  - Nokia tune — 12, ритм оригинала (8-8-4-4), ~4,5 секунды
   - Happy Birthday (2): точные ноты и естественный ритм, ~8 секунд
+  - При запуске RGB-индикатор переливается разными цветами
   - Исправлено превью Chime: номер обновляется до начала звука
   - Chime: режим Random — каждый час случайный вариант из 13
-  - Названия сигналов заменены номерами 0..12; используются 57 частот
+  - Названия сигналов заменены номерами 0..12; используются 55 частот
     (1000–10000 Гц), разные ритмы и регистры
   - На экране запуска показываются дата и время компиляции прошивки
   - Поправка температуры сброшена в 0; сохранённое в EEPROM значение
     температуры больше не читается
   - Alarm SET применяет время и возвращается в меню настроек (не на главный
     экран); удержание на поле SET делает то же самое
-  - При запуске играет старый модем (chime 4; в сборке RESET_CLOCK 1
-    отключён для экономии flash)
   - В меню у пунктов Alarm и Chime есть иконки (колокольчик и нота)
   - В обычной прошивке экраны настроек и редакторы сами возвращаются на
     главный экран после 2 минут без нажатий (в сборке RESET_CLOCK 1 таймаут
@@ -52,7 +106,7 @@
   - Остальное — как в v2.3
   - Меню переупорядочено: Alarm — 1, Chime — 2, далее Save/Exit,
     яркость, LED Mode, CO2 Calibration, Altitude — 9
-  - Flash 30 544 байта (99%), RAM 916 байт (для 2004)
+  - Flash 30 650 байт (99%), RAM 919 байт (для 2004)
 
   Версия 2.3
   - Редактор будильника: вход сразу в EDIT; 1x меняет поле, удержание — следующее
@@ -161,17 +215,16 @@
 // -------- значения по умолчанию (используются, если в EEPROM ничего нет) --------
 #define TEMP_CORRECTION 0    // поправка температуры, °C (0 = без поправки; EEPROM для неё не используется)
 #define HUMIDITY_CORRECTION 0 // поправка влажности, %
-#define ALTITUDE_DEFAULT 0    // высота над уровнем моря для QNH, м
 #define ALARM_HOUR_DEFAULT 7
 #define ALARM_MIN_DEFAULT 0
 #define CHIME_SOUND_DEFAULT 1    // 1 = "дин-дон" (вариант A)
-#define CHIME_MODE_COUNT 13      // число вариантов в таблице chimePatterns
+#define CHIME_MODE_COUNT 21      // число вариантов в таблице chimePatterns
 #define CHIME_RANDOM CHIME_MODE_COUNT  // псевдоиндекс режима Random
 #define STARTUP_CHIME 4        // при запуске играет старый модем
 
 // управление яркостью
 byte LED_BRIGHT = 10;         // при отсутствии сохранения в EEPROM: яркость светодиода СО2 (0 - 10) (коэффициент настраиваемой яркости индикатора по умолчанию, если нет сохранения и не автоматическая регулировка (с)НР)
-byte LCD_BRIGHT = 10;         // при отсутствии сохранения в EEPROM: яркость экрана (0 - 10) (коэффициент настраиваемой яркости экрана по умолчанию, если нет сохранения и не автоматическая регулировка (с)НР)
+#define LCD_BRIGHT 10          // яркость подсветки: 0..10, 11 = авто (меню удалено, задаётся здесь)
 
 #define BRIGHT_CONTROL 1      // 0/1 - запретить/разрешить управление яркостью (при отключении яркость всегда будет макс.)
 #define BRIGHT_THRESHOLD 350  // величина сигнала, ниже которой яркость переключится на минимум (0-1023)
@@ -191,6 +244,9 @@ byte LCD_BRIGHT = 10;         // при отсутствии сохранени�
 #define normCO2 800       // и выше - желтый
 #define maxCO2 1200       // и выше - красный
 #define blinkLEDCO2 1500  // Значение СО2, при превышении которого будет мигать индикатор
+#define CO2_WARN_LEVEL maxCO2      // критический уровень CO2 для предупреждающего писка
+#define CO2_WARN_PERIOD_MS 120000UL // период предупреждения, мс
+#define CO2_WARN_BEEP_MS 150       // длительность короткого писка, мс
 
 #define minTemp 21        // и ниже для синего индикатора
 #define normTemp 26       // и выше - желтый
@@ -216,42 +272,33 @@ byte LEDType = 0;         //  при отсутствии сохранения �
 #define EE_MODE0 6
 #define EE_BIGDIG 7
 #define EE_LED_BRIGHT 8
-#define EE_LCD_BRIGHT 9
 #define EE_LED_TYPE 10
-#define EE_TEMP_OFF 14        // int8: десятые °C, -50..50
 #define EE_HUM_OFF 15         // int8: %, -20..20
-#define EE_ALTITUDE 16        // uint16: метры, 0..3000 (16,17)
 #define EE_ALARM_HOUR 18
 #define EE_ALARM_MIN 19
-#define EE_FLAGS 20           // bit0 - будильник, bit1 - почасовой сигнал
+#define EE_FLAGS 20           // bit0 - будильник, bit1 - почасовой сигнал, bit2 - нет писка CO2
 #define EE_VERSION 21
 #define EE_CHIME_SOUND 22     // выбранный вариант почасового сигнала (0..20; 21 = Random)
 #define EE_MAGIC_VALUE 124
-#define EE_VERSION_VALUE 3
+#define EE_VERSION_VALUE 6
 #define FLAG_ALARM 1
 #define FLAG_CHIME 2
+#define FLAG_NO_CO2_BEEP 4    // bit2: предупреждающий писк CO2 отключён
 
 // Настройки, сохраняемые в EEPROM. int16_t выбран специально: все они
 // редактируются одним универсальным редактором через указатель.
 int16_t tempOffset = (int16_t)(TEMP_CORRECTION * 10); // десятые °C
 int16_t humOffset = HUMIDITY_CORRECTION;              // %
-int16_t altitude = ALTITUDE_DEFAULT;                  // м
 int16_t alarmHour = ALARM_HOUR_DEFAULT;
 int16_t alarmMin = ALARM_MIN_DEFAULT;
 byte alarmEditH = 0, alarmEditM = 0;             // временные часы/минуты редактора Alarm
-byte alarmField = 0;                             // 0=часы, 1=минуты, 2=ON/OFF, 3=SET
+byte alarmField = 0;                             // 0=часы, 1=минуты, 2=ON/OFF
 int16_t alarmEnabled = 0;
 int16_t chimeEnabled = 0;
-int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..12 или CHIME_RANDOM)
-int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..13 = сигнал 0..12, 14 = Random
+int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..20 или CHIME_RANDOM)
+int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..21 = сигнал 0..20, 22 = Random
 uint16_t rngState = 0xACE1;                      // состояние генератора для Chime → Random
 byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота (будильник/сигнал)
-
-// Универсальный редактор пунктов меню 7..9
-int16_t *editTarget = NULL;
-int16_t editMin = 0, editMax = 0, editStep = 1, editBigStep = 1;
-int8_t editDirection = 1;       // +1: 1x, -1: 2x; hold repeats this direction
-byte editRepeatCount = 0;
 
 
 // адрес BME280: у стоковых модулей 0x77, у китайских 0x76.
@@ -317,7 +364,7 @@ int8_t hrs, mins, secs;
 byte mode = 0;
 boolean timeValid = true;   // false после потери питания RTC, пока время не выставлено с ПК
 boolean lcdReady = false;   // LCD инициализирован, можно перерисовывать экран из setTimeSerial()
-byte podMode = 1; // пункт меню 1..9
+byte podMode = 1; // пункт меню 1..7
 byte mode0scr = 0;
 /* (с)НР
   0 - Крупно время
@@ -327,7 +374,6 @@ byte mode0scr = 0;
   4 - Крупно влажность
   7 - Суточные min/max (2004: все; 1602: T/H)
   8 - Суточные min/max P/CO2 (только 1602)
-  9 - Крупно QNH (давление на уровне моря)
 */
 boolean bigDig = false;   // true - цифры на главном экране на все 4 строки (для LCD 2004) (с)НР
 
@@ -340,8 +386,6 @@ boolean co2Gate = true;              // true = показывать "---" (пр�
 #define CO2_WARMUP_MS 300000UL       // 5 минут прогрева после включения
 
 // computed weather values
-float stationHpa = 0;                // абсолютное давление, hPa
-int dispQnh = 0;                     // давление на уровне моря, mmHg
 boolean bmeOk = false;               // последнее чтение BME280 достоверно
 
 // суточные минимумы/максимумы (сбрасываются при смене даты)
@@ -355,9 +399,14 @@ int statCO2Min = 0, statCO2Max = 0;
 // будильник / почасовой сигнал
 boolean alarmActive = false;
 boolean chimeActive = false;
+boolean startupLED = false;            // перелив RGB при запуске
+boolean co2BeepEnabled = true;         // предупреждающий писк при критическом CO2
+boolean co2WarnBeepActive = false;     // сейчас звучит короткий писк CO2
+unsigned long co2WarnTimer = 0;        // время последнего предупреждения
+unsigned long co2WarnBeepStart = 0;    // начало текущего писка
 byte alarmPhase = 0;
 byte chimeStep = 0;
-byte chimePos = 0;                     // позиция в таблице chimePatterns
+uint16_t chimePos = 0;                 // позиция в таблице chimePatterns (таблица > 255 шагов)
 uint16_t chimeStepMs = 0;              // длительность текущего шага сигнала
 boolean touchBeepActive = false;
 unsigned long touchBeepStart = 0;
@@ -473,30 +522,12 @@ void drawPPM(int dispCO2, byte x, byte y) {     // Уровень СО2 круп
 }
 
 void drawPres(int dispPres, byte x, byte y) {   // Давление крупно на главном экране (с)НР ----------------------------
-  drawDig((dispPres % 1000) / 100, x , y);
-  drawDig((dispPres % 100) / 10, x + 4, y);
+  drawDig(dispPres / 100, x , y);
+  drawDig((dispPres / 10) % 10, x + 4, y);
   drawDig(dispPres % 10 , x + 8, y);
   lcd.setCursor(x + 11, 1);
   if (bigDig && DISPLAY_TYPE == 1) lcd.setCursor(x + 11, 3);
   lcd.print(F("mmHg"));
-}
-
-void drawPresQnh(int dispPres, byte x, byte y) { // QNH: 4 цифры, чтобы 1000+ mmHg не обрезалось
-#if (DISPLAY_TYPE == 1)
-  drawDig(dispPres < 1000 ? 10 : (dispPres / 1000) % 10, x, y);
-  drawDig((dispPres / 100) % 10, x + 4, y);
-  drawDig((dispPres / 10) % 10, x + 8, y);
-  drawDig(dispPres % 10, x + 12, y);
-  lcd.setCursor(16, bigDig ? 3 : 1);
-  lcd.print(F("QNH"));
-#else
-  drawDig(dispPres < 1000 ? 10 : (dispPres / 1000) % 10, x, y);
-  drawDig((dispPres / 100) % 10, x + 3, y);
-  drawDig((dispPres / 10) % 10, x + 6, y);
-  drawDig(dispPres % 10, x + 9, y);
-  lcd.setCursor(12, 1);
-  lcd.print(F("QNH"));
-#endif
 }
 
 void drawTemp(float dispTemp, byte x, byte y) { // Температура крупно на главном экране (с)НР ----------------------------
@@ -542,10 +573,8 @@ void drawTemp(float dispTemp, byte x, byte y) { // Температура кру
 }
 
 void drawHum(int dispHum, byte x, byte y) {   // Влажность крупно на главном экране (с)НР ----------------------------
-  if (dispHum / 100 == 0) drawDig(10, x, y);
-  else drawDig(dispHum / 100, x, y);
-  if ((dispHum % 100) / 10 == 0) drawDig(0, x + 4, y);
-  else drawDig(dispHum / 10, x + 4, y);
+  drawDig(dispHum >= 100 ? 1 : 10, x, y);
+  drawDig(dispHum >= 10 ? (dispHum / 10) % 10 : 10, x + 4, y);
   drawDig(int(dispHum) % 10, x + 8, y);
   if (bigDig && DISPLAY_TYPE == 1) {
     lcd.setCursor(x + 12, y + 1);
@@ -573,7 +602,7 @@ static const char dayNames[] PROGMEM = "SuMoTuWeThFrSa";
 
 
 void drawData() {                     // выводим дату -------------------------------------------------------------
-  if (mode0scr >= 7) return;          // экраны статистики и QNH занимают весь дисплей
+  if (mode0scr >= 7) return;          // экраны статистики занимают весь дисплей
   if (!bigDig) {              // если 4-х строчные цифры, то дату, день недели (и секунды) не пишем - некуда (с)НР
     if (!timeValid) {         // после потери питания RTC дата недостоверна
       lcd.setCursor(15, 0); lcd.print(F("     "));
@@ -639,6 +668,10 @@ void printTempField(float t, byte width) { // температура с одни
   lcd.print(tenths);
 }
 
+int tempInt() {                    // температура, округлённая до целых (для компактных колонок)
+  return (int)(dispTemp < 0 ? dispTemp - 0.5 : dispTemp + 0.5);
+}
+
 void printTemp(float t) {          // вывод температуры с одним знаком после запятой без String (с)НР
   printTempField(t, 0);
 }
@@ -673,9 +706,10 @@ byte LED_ON = (255 - LED_BRIGHT_MAX);
 void setLEDcolor(byte color) {                    // цвет индикатора задается двумя битами на каждый цвет (с)НР
 #if (LED_MODE == 0)
   // главный катод: 0 - выключен, LED_ON - полная яркость (с)НР
-  analogWrite(LED_R, LED_ON * (color & 3) / 3);
-  analogWrite(LED_G, LED_ON * ((color & 12) >> 2) / 3);
-  analogWrite(LED_B, LED_ON * ((color & 48) >> 4) / 3);
+  byte step = LED_ON / 3;
+  analogWrite(LED_R, step * (color & 3));
+  analogWrite(LED_G, step * ((color & 12) >> 2));
+  analogWrite(LED_B, step * ((color & 48) >> 4));
 #else
   // главный анод: 0 - полная яркость, 255 - выключен (с)НР
   analogWrite(LED_R, LED_ON + (255 - LED_ON) * (3 - (color & 3)) / 3);
@@ -698,17 +732,31 @@ void setLED() {
   if (LED_MODE != 0) LED_ON = 255 - LED_ON;
 
   // Во время прогрева/ошибки/перегруза CO2 не показываем красный/жёлтый индикатор
-  if (co2Gate && LEDType == 0) {
-    setLEDcolor(12);   // зелёный
-    return;
+  switch (LEDType) {
+    case 0:
+      if (co2Gate) { setLEDcolor(12); return; }       // зелёный
+      if (dispCO2 >= maxCO2) setLEDcolor(3);          // красный
+      else if (dispCO2 >= normCO2) setLEDcolor(3 + 8); // жёлтый
+      else setLEDcolor(12);                           // зелёный
+      break;
+    case 1:
+      if (dispHum <= minHum) setLEDcolor(3);
+      else if (dispHum <= normHum) setLEDcolor(3 + 8);
+      else if (dispHum <= maxHum) setLEDcolor(12);
+      else setLEDcolor(48);                           // синий
+      break;
+    case 2:
+      if (dispTemp >= maxTemp) setLEDcolor(3);
+      else if (dispTemp >= normTemp) setLEDcolor(3 + 8);
+      else if (dispTemp >= minTemp) setLEDcolor(12);
+      else setLEDcolor(48);
+      break;
+    default:
+      if (dispPres <= minPress) setLEDcolor(3);
+      else if (dispPres <= normPress) setLEDcolor(3 + 8);
+      else setLEDcolor(12);
+      break;
   }
-
-  // ниже задается цвет индикатора в зависимости от назначенного сенсора: красный, желтый, зеленый, синий (с)НР
-
-  if (((dispCO2 >= maxCO2) && LEDType == 0) || ((dispHum <= minHum) && LEDType == 1) || ((dispTemp >= maxTemp) && LEDType == 2) || ((dispPres <= minPress) && LEDType == 3)) setLEDcolor(3);   // красный
-  else if (((dispCO2 >= normCO2) && LEDType == 0) || ((dispHum <= normHum) && LEDType == 1) || ((dispTemp >= normTemp) && LEDType == 2) || ((dispPres <= normPress) && LEDType == 3)) setLEDcolor(3 + 8);   // желтый
-  else if ((LEDType == 0) || ((dispHum <= maxHum) && LEDType == 1) || ((dispTemp >= minTemp) && LEDType == 2) || (LEDType == 3)) setLEDcolor(12);    // зеленый
-  else setLEDcolor(48);   // синий (влажность выше максимума или температура ниже минимума)
 }
 
 boolean readSerialLine(char* buf, byte size) {   // неблокирующее чтение строки из порта; true - строка получена (с)НР
@@ -827,17 +875,20 @@ void setup() {
   lcd.clear();
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.15"));
+  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.21"));
   lcd.setCursor(0, 1); lcd.print(F("Compiled ")); lcd.print(F(__DATE__));
   lcd.setCursor(3, 2); lcd.print(F("Time ")); lcd.print(F(__TIME__));
 #else
-  lcd.setCursor(0, 0); lcd.print(F("v2.15")); lcd.print(F(__DATE__));
+  lcd.setCursor(0, 0); lcd.print(F("v2.21")); lcd.print(F(__DATE__));
   lcd.setCursor(4, 1); lcd.print(F(__TIME__));
 #endif
+  setLED();                           // применить сохранённую яркость
 #if (RESET_CLOCK == 0)
-  playChimeSound(STARTUP_CHIME);      // при запуске играет старый модем
+  startupLED = true;
+  playChimeSound(STARTUP_CHIME);      // старый модем + перелив RGB
+  startupLED = false;
 #endif
-  delay(1800);
+  setLEDcolor(0);
   lcd.clear();
 
 #if (DEBUG == 1 && DISPLAY_TYPE == 1)

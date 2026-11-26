@@ -7,7 +7,11 @@ void playChimeSound(byte target);
 uint8_t randomChime();
 #endif
 void playRandomChime();
+void setLEDcolor(byte color);
 void drawEditValueLine();
+
+boolean editGuard = false;      // true: кнопка, которой вошли в редактор, ещё не отпущена (не даём автоповтору сработать)
+byte alarmStepCnt = 0;          // номер шага автоповтора (минуты ускоряются)
 
 // Частоты для пассивного пьезо и готовые значения OCR2A для Timer2:
 // f = F_CPU / (2 * 32 * (OCR2A + 1)), F_CPU = 16 МГц.
@@ -105,23 +109,24 @@ void applyTempOffset() {
 void loadSettings() {
   if (EEPROM.read(EE_MAGIC) != EE_MAGIC_VALUE) return;
 
-  // Поля v1.9 читаем всегда — они совместимы.
-  byte v = EEPROM.read(EE_MODE0);
-  if (v <= 9) mode0scr = v;
+  // Поля, совместимые с v1.9. Последний экран читаем только при START_BIG_CLOCK 0.
+  byte v;
+#if (START_BIG_CLOCK == 0)
+  v = EEPROM.read(EE_MODE0);
+  if (v <= 8) mode0scr = v;
   if (mode0scr == 5 || mode0scr == 6) mode0scr = 7;  // старые экраны dew/heat
 #if (DISPLAY_TYPE == 1)
-  if (mode0scr == 8) mode0scr = 9;       // 8-й экран есть только на 1602
+  if (mode0scr == 8) mode0scr = 7;       // 8-й экран есть только на 1602
 #endif
 #if (CO2_SENSOR == 0)
   if (mode0scr == 1) mode0scr = 2;
 #endif
 
   bigDig = EEPROM.read(EE_BIGDIG) != 0;
+#endif
 
   v = EEPROM.read(EE_LED_BRIGHT);
   if (v <= 11) LED_BRIGHT = v;
-  v = EEPROM.read(EE_LCD_BRIGHT);
-  if (v <= 11) LCD_BRIGHT = v;
   v = EEPROM.read(EE_LED_TYPE);
   if (v <= 3) LEDType = v;
   else if (v == 4) LEDType = 3;          // v1.9: 4 = давление, теперь 3
@@ -134,9 +139,6 @@ void loadSettings() {
   int8_t t = (int8_t)EEPROM.read(EE_HUM_OFF);
   if (t >= -20 && t <= 20) humOffset = t;
 
-  uint16_t alt = EEPROM.read(EE_ALTITUDE) | ((uint16_t)EEPROM.read(EE_ALTITUDE + 1) << 8);
-  if (alt <= 3000) altitude = alt;
-
   v = EEPROM.read(EE_ALARM_HOUR);
   if (v <= 23) alarmHour = v;
   v = EEPROM.read(EE_ALARM_MIN);
@@ -145,25 +147,28 @@ void loadSettings() {
   v = EEPROM.read(EE_FLAGS);
   alarmEnabled = (v & FLAG_ALARM) ? 1 : 0;
   chimeEnabled = (v & FLAG_CHIME) ? 1 : 0;
+  co2BeepEnabled = !(v & FLAG_NO_CO2_BEEP);
 
   v = EEPROM.read(EE_CHIME_SOUND);
+  if (ver < 4 && v == 13) v = CHIME_RANDOM;   // в v2.18 значение 13 означало Random
+  if (ver < 5 && v == 17) v = CHIME_RANDOM;   // в v2.21 значение 17 означало Random
+  if (ver < 6 && v == 19) v = CHIME_RANDOM;   // в v2.21 (без Morning/Carol) 19 = Random
   if (v <= CHIME_RANDOM) chimeSound = v;
 }
 
 void saveSettings() {
   EEPROM.update(EE_MAGIC, EE_MAGIC_VALUE);
+#if (START_BIG_CLOCK == 0)
   EEPROM.update(EE_MODE0, mode0scr);
   EEPROM.update(EE_BIGDIG, bigDig ? 1 : 0);
+#endif
   EEPROM.update(EE_LED_BRIGHT, LED_BRIGHT);
-  EEPROM.update(EE_LCD_BRIGHT, LCD_BRIGHT);
   EEPROM.update(EE_LED_TYPE, LEDType);
-  EEPROM.update(EE_TEMP_OFF, (uint8_t)tempOffset);
   EEPROM.update(EE_HUM_OFF, (uint8_t)humOffset);
-  EEPROM.update(EE_ALTITUDE, (uint8_t)(altitude & 0xFF));
-  EEPROM.update(EE_ALTITUDE + 1, (uint8_t)((altitude >> 8) & 0xFF));
   EEPROM.update(EE_ALARM_HOUR, (uint8_t)alarmHour);
   EEPROM.update(EE_ALARM_MIN, (uint8_t)alarmMin);
   byte flags = (alarmEnabled ? FLAG_ALARM : 0) | (chimeEnabled ? FLAG_CHIME : 0);
+  if (!co2BeepEnabled) flags |= FLAG_NO_CO2_BEEP;
   EEPROM.update(EE_FLAGS, flags);
   EEPROM.update(EE_CHIME_SOUND, (uint8_t)chimeSound);
   EEPROM.update(EE_VERSION, EE_VERSION_VALUE);
@@ -191,15 +196,6 @@ void printStatTemp(float v, byte width, boolean ok) {
 void printStatInt(int v, byte width, boolean ok) {
   if (ok) printValRight(v, width);
   else printDashes(width);
-}
-
-void updateQnh() {
-  if (!bmeOk) return;
-  // (1 - 2.25577e-5*h)^-5.25588, ряд Тейлора до h^3.
-  // Ошибка < 0.1% на высотах до 3000 м, без pow().
-  float x = altitude * 2.25577e-5;
-  float inv = 1.0 + x * (5.25588 + x * (16.4395 + x * 39.76));
-  dispQnh = (int)(stationHpa * inv * 0.750062 + 0.5);
 }
 
 void statsReset() {
@@ -261,131 +257,111 @@ void statsTick() {
   statsUpdate();
 }
 
+// Экраны min/max: во всех строках одинаковая ширина полей, поэтому
+// разделитель "/" стоит в одной колонке (2004: поля по 5, 1602: P/CO2 по 4).
 void drawStatsAll() {
   lcd.setCursor(0, 0);
   lcd.print(F("T "));
   printStatTemp(statTempMin, 5, statTempOk); lcd.print('/');
-  printStatTemp(statTempMax, 5, statTempOk); lcd.print(F(" C"));
+  printStatTemp(statTempMax, 5, statTempOk); lcd.print(' '); lcd.write(223); lcd.print('C');
   lcd.setCursor(0, 1);
   lcd.print(F("H "));
-  printStatInt(statHumMin, 3, statHumOk); lcd.print('/');
-  printStatInt(statHumMax, 3, statHumOk); lcd.print(F(" %"));
+  printStatInt(statHumMin, 5, statHumOk); lcd.print('/');
+  printStatInt(statHumMax, 5, statHumOk); lcd.print(F(" %"));
   lcd.setCursor(0, 2);
   lcd.print(F("P "));
-  printStatInt(statPresMin, 3, statPresOk); lcd.print('/');
-  printStatInt(statPresMax, 3, statPresOk); lcd.print(F(" mm"));
+  printStatInt(statPresMin, 5, statPresOk); lcd.print('/');
+  printStatInt(statPresMax, 5, statPresOk); lcd.print(F(" mmHg"));
   lcd.setCursor(0, 3);
   lcd.print(F("C "));
-  printStatInt(statCO2Min, 4, statCO2Ok); lcd.print('/');
-  printStatInt(statCO2Max, 4, statCO2Ok); lcd.print(F(" ppm"));
+  printStatInt(statCO2Min, 5, statCO2Ok); lcd.print('/');
+  printStatInt(statCO2Max, 5, statCO2Ok); lcd.print(F(" ppm"));
 }
 
 void drawStatsTH() {
   lcd.setCursor(0, 0);
   lcd.print(F("T "));
   printStatTemp(statTempMin, 5, statTempOk); lcd.print('/');
-  printStatTemp(statTempMax, 5, statTempOk);
+  printStatTemp(statTempMax, 5, statTempOk); lcd.write(223);
   lcd.setCursor(0, 1);
   lcd.print(F("H "));
-  printStatInt(statHumMin, 3, statHumOk); lcd.print('/');
-  printStatInt(statHumMax, 3, statHumOk); lcd.print(F(" %"));
+  printStatInt(statHumMin, 5, statHumOk); lcd.print('/');
+  printStatInt(statHumMax, 5, statHumOk); lcd.print(F(" %"));
 }
 
 void drawStatsPC() {
   lcd.setCursor(0, 0);
   lcd.print(F("P "));
-  printStatInt(statPresMin, 3, statPresOk); lcd.print('/');
-  printStatInt(statPresMax, 3, statPresOk); lcd.print(F(" mmHg"));
+  printStatInt(statPresMin, 4, statPresOk); lcd.print('/');
+  printStatInt(statPresMax, 4, statPresOk); lcd.print(F(" mmHg"));
   lcd.setCursor(0, 1);
   lcd.print(F("C "));
   printStatInt(statCO2Min, 4, statCO2Ok); lcd.print('/');
   printStatInt(statCO2Max, 4, statCO2Ok); lcd.print(F(" ppm"));
 }
 
-void drawQnh() {
-  drawPresQnh(dispQnh, 0, 0);
-#if (DISPLAY_TYPE == 1)
-  if (!bigDig) {
-    lcd.setCursor(0, 2);
-    lcd.print(F("P "));
-    printValRight(dispPres, 3);
-    lcd.print(F(" mmHg"));
-    lcd.setCursor(0, 3);
-    lcd.print(F("Alt "));
-    printValRight(altitude, 4);
-    lcd.print(F(" m"));
-  }
-#endif
-}
-
 void beginEdit(byte item) {
   mode = 240;
-  editDirection = 1;
-  editRepeatCount = 0;
   switch (item) {
-    case 9:  editTarget = &altitude;    editMin = 0;    editMax = 3000; editStep = 1;  editBigStep = 10;  break;
     case 1:  alarmEditH = alarmHour; alarmEditM = alarmMin; alarmField = 0;
-             editTarget = NULL; break;
-    case 2:  chimeSel = chimeEnabled ? (chimeSound + 1) : 0;
-             editTarget = &chimeSel; editMin = 0; editMax = CHIME_MODE_COUNT + 1; editStep = 1; editBigStep = 1; break;
+             editGuard = true; alarmStepCnt = 0; break;
+    case 2:  chimeSel = chimeEnabled ? (chimeSound + 1) : 0; break;
   }
 }
 
-void alarmEditStep() {
+// Один шаг редактора Alarm: +1 к часам/минутам или переключение ON/OFF.
+// held = шаг от удержания кнопки: после 8 шагов минуты идут по 5.
+void alarmEditStep(boolean held) {
   if (alarmField == 0) {
     alarmEditH = (alarmEditH + 1) % 24;
   } else if (alarmField == 1) {
-    alarmEditM = (alarmEditM + 1) % 60;
-  } else if (alarmField == 2) {
+    if (held && alarmStepCnt >= 8) alarmEditM = (alarmEditM / 5 * 5 + 5) % 60;
+    else alarmEditM = (alarmEditM + 1) % 60;
+  } else {
     alarmEnabled = alarmEnabled ? 0 : 1;
-    alarmDoneDay = 0;
     if (!alarmEnabled) stopAlarm();
   }
+  if (alarmField < 2) alarmEnabled = 1;      // поменяли время — значит, будильник нужен
+  alarmDoneDay = 0;
+  if (held && alarmStepCnt < 255) alarmStepCnt++;
   alarmHour = alarmEditH;
   alarmMin = alarmEditM;
 }
 
 void finishEdit() {
-  if (podMode == 9) {
-    updateQnh();
-  } else if (podMode == 1) {
+  if (podMode == 1) {
     alarmHour = alarmEditH;
     alarmMin = alarmEditM;
     alarmDoneDay = 0;
+    saveSettings();                          // будильник сохраняется сразу, отдельный Save не нужен
   }
 }
 
 void editApply(int16_t delta) {
-  if (!editTarget) return;
-  int16_t v = *editTarget + delta;
-  if (v < editMin) v = editMax;     // wrap: после конца — начало
-  if (v > editMax) v = editMin;
-  *editTarget = v;
-  if (podMode == 2) {                          // Chime: OFF, вариант или Random
-    chimeEnabled = (chimeSel > 0) ? 1 : 0;
+  int16_t v = chimeSel + delta;
+  if (v < 0) v = CHIME_MODE_COUNT + 1;      // wrap: после конца — начало
+  if (v > CHIME_MODE_COUNT + 1) v = 0;
+  chimeSel = v;
+  chimeEnabled = (chimeSel > 0) ? 1 : 0;
+  if (chimeEnabled) chimeSound = chimeSel - 1;
+  else chimeActive = false;
+  drawEditValueLine();          // сначала показать номер, затем играть превью
+  if (!alarmActive) {
     if (chimeEnabled) {
-      chimeSound = chimeSel - 1;
-      drawEditValueLine();        // сначала показать номер, затем играть превью
-      if (!alarmActive) {
-        if (chimeSound == CHIME_RANDOM) playRandomChime();       // превью случайного варианта
-        else playChimeSound((byte)chimeSound);                  // превью выбранного варианта
-      }
+      if (chimeSound == CHIME_RANDOM) playRandomChime();       // превью случайного варианта
+      else playChimeSound((byte)chimeSound);                  // превью выбранного варианта
     } else {
-      chimeActive = false;
-      drawEditValueLine();
-      if (!alarmActive) buzzerOff();
+      buzzerOff();
     }
-    return;
   }
-  if (podMode == 9) updateQnh();
 }
 
 #if (DISPLAY_TYPE == 1)
 static const char menuNames[] PROGMEM =
-  "Alarm\0Chime\0Save\0Exit\0LED Br\0LCD Br\0LED Mode\0CO2 Calibration\0Altitude";
+  "Alarm\0Chime\0Save\0Exit\0LED Br\0LED Mode\0CO2 Calibration";
 #else
 static const char menuNames[] PROGMEM =
-  "Alarm\0Chime\0Save\0Exit\0LED Br\0LCD Br\0LED Mode\0CO2 Calib\0Altitude";
+  "Alarm\0Chime\0Save\0Exit\0LED Br\0LED Mode\0CO2 Calib";
 #endif
 
 void printMenuItemName() {
@@ -413,90 +389,71 @@ void printTime(int m) {
 }
 
 void printEditValue() {
-  switch (podMode) {
-    case 9:  lcd.print(altitude); lcd.print(F(" m")); break;
-    case 2:
-      if (!chimeEnabled) lcd.print(F("OFF"));
-      else if (chimeSound >= CHIME_MODE_COUNT) lcd.print(F("Random"));
-      else lcd.print(chimeSound);
-      break;
-  }
+  if (!chimeEnabled) lcd.print(F("OFF"));
+  else if (chimeSound >= CHIME_MODE_COUNT) lcd.print(F("Random"));
+  else { lcd.print(F("Sound ")); lcd.print(chimeSound); }
 }
 
 void drawEditValueLine() {
 #if (DISPLAY_TYPE == 1)
   clearLine(1, 20);
-  lcd.setCursor(2, 1);
 #else
   clearLine(1, 16);
-  lcd.setCursor(0, 1);
-  if (podMode == 9) {
-    printMenuItemName();
-    lcd.print(' ');
-  }
 #endif
+  lcd.setCursor(2, 1);                 // та же колонка, что и в меню
   printEditValue();
+}
+
+// Скобка вокруг выбранного поля; у остальных на её месте пробел, поэтому
+// строка имеет фиксированную ширину (14 знаков) и её можно перерисовывать
+// без очистки экрана.
+void alarmMark(byte f, char c) {
+  lcd.print(alarmField == f ? c : ' ');
 }
 
 void drawAlarmFields() {
   lcd.setCursor(0, 0);
-  if (alarmField == 0) lcd.print('[');
-  printTwoDigits(alarmEditH);
-  if (alarmField == 0) lcd.print(']');
+  alarmMark(0, '['); printTwoDigits(alarmEditH); alarmMark(0, ']');
   lcd.print(':');
-  if (alarmField == 1) lcd.print('[');
-  printTwoDigits(alarmEditM);
-  if (alarmField == 1) lcd.print(']');
-  lcd.print(' ');
-  if (alarmField == 2) lcd.print('[');
-  lcd.print(alarmEnabled ? F("ON") : F("OFF"));
-  if (alarmField == 2) lcd.print(']');
-  lcd.print(' ');
-  if (alarmField == 3) lcd.print('[');
-  lcd.print(F("SET"));
-  if (alarmField == 3) lcd.print(']');
+  alarmMark(1, '['); printTwoDigits(alarmEditM); alarmMark(1, ']');
+  alarmMark(2, '['); lcd.print(alarmEnabled ? F("ON ") : F("OFF")); alarmMark(2, ']');
+}
+
+void drawAlarmHint() {                 // подсказка зависит от выбранного поля
+#if (DISPLAY_TYPE == 1)
+  lcd.setCursor(0, 2);
+  lcd.print(alarmField < 2 ? F("1x +1   hold = fast ") : F("1x = switch ON/OFF  "));
+  lcd.setCursor(0, 3);
+  lcd.print(alarmField < 2 ? F("2x = next field ") : F("2x = save & exit"));
+#endif
 }
 
 void drawAlarmEdit() {
   drawAlarmFields();
+  lcd.setCursor(0, 1);
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(0, 1);
-  lcd.print(F("Alarm EDIT"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("1x change  hold next"));
-  lcd.setCursor(0, 3);
-  lcd.print(F("SET exits to menu"));
+  lcd.write(6);                        // иконка колокольчика, как в меню
+  lcd.print(F(" Alarm EDIT"));
+  drawAlarmHint();
 #else
-  lcd.setCursor(0, 1);
-  lcd.print(F("EDIT 1x HOLD>"));
+  lcd.print(F("1x+ hold++ 2x->"));
 #endif
 }
 
 void drawEdit() {
   if (podMode == 1) { drawAlarmEdit(); return; }
   lcd.setCursor(0, 0);
+  lcd.write(7);                        // иконка ноты (редактор есть только у Alarm и Chime)
+  lcd.print(' ');
 #if (DISPLAY_TYPE == 1)
   printMenuItemName();
   lcd.setCursor(16, 0);
   lcd.print(F("EDIT"));
   drawEditValueLine();
-  if (podMode != 2) {                         // Chime: без строки текущих показаний
-    clearLine(2, 20);
-    lcd.setCursor(0, 2);
-    if (podMode == 9) drawCurrentPQ();
-  }
   lcd.setCursor(0, 3);
-  if (podMode == 2) lcd.print(F("1x+ 2x- hold=OK"));
-  else lcd.print(F("1x+ 2x- 3x back"));
+  lcd.print(F("1x+ 2x- hold=OK"));
 #else
-  if (podMode == 9) {
-    lcd.print('P');
-    printValRight(dispPres, 3);
-    lcd.print(F(" Q"));
-    printValRight(dispQnh, 4);
-  } else {
-    printMenuItemName();
-  }
+  printMenuItemName();
   drawEditValueLine();
 #endif
 }
@@ -517,10 +474,8 @@ void printMenuItemValue() {
     case 3: lcd.print(F("save EEPROM")); break;
     case 4: lcd.print(F("no save")); break;
     case 5: printBrightness(LED_BRIGHT); break;
-    case 6: printBrightness(LCD_BRIGHT); break;
-    case 7: printSensorName(); break;
-    case 8: lcd.print(F("400 ppm")); break;
-    case 9: printEditValue(); break;
+    case 6: printSensorName(); break;
+    case 7: lcd.print(F("400 ppm")); break;
   }
 }
 
@@ -542,7 +497,7 @@ void drawMenu() {
   lcd.setCursor(13, 0);
 #endif
   lcd.print(podMode);
-  lcd.print(F("/9"));
+  lcd.print(F("/7"));
   lcd.setCursor(2, 1);
   printMenuItemValue();
 #if (DISPLAY_TYPE == 1)
@@ -556,8 +511,7 @@ void drawMenu() {
 void returnToMenu() {
   switch (mode) {
     case 254: podMode = 5; break;   // LED Br
-    case 253: podMode = 6; break;   // LCD Br
-    case 252: podMode = 7; break;   // LED Mode
+    case 252: podMode = 6; break;   // LED Mode
   }
   mode = 255;
 }
@@ -566,6 +520,7 @@ void stopAlarm() {
   alarmActive = false;
   chimeActive = false;
   touchBeepActive = false;
+  co2WarnBeepActive = false;
   buzzerOff();
 }
 
@@ -598,16 +553,24 @@ static const ChimeStep chimePatterns[] PROGMEM = {
   {10, 5}, {20, 6}, {21, 7},  {66, 6},  {22, 8},  {23, 9},  {43, 6}, {9, 22}, {CT_END, 0}, // 5 low gong
   {8, 3},  {25, 3}, {26, 3},  {27, 3},  {28, 3},  {69, 3},  {29, 10}, {46, 6}, {30, 10}, {CT_END, 0}, // 6 rising run
   {19, 3}, {15, 3}, {14, 3},  {18, 3},  {6, 3},   {4, 3},   {50, 3},  {48, 3}, {3, 16}, {CT_END, 0}, // 7 falling run
-  {31, 2}, {32, 2}, {33, 2},  {34, 2},  {35, 2},  {59, 2},  {60, 2}, {61, 2}, {CT_GAP, 3}, {31, 3}, {35, 12}, {15, 6}, {CT_END, 0}, // 8 sparkle
-  {10, 6}, {0, 3},  {15, 4},  {70, 4},  {10, 6},  {49, 4},  {34, 4},  {34, 14}, {CT_END, 0}, // 9 wide leap
-  {32, 2}, {1, 6},  {CT_GAP, 3}, {68, 3}, {7, 8}, {CT_GAP, 3}, {37, 3}, {0, 8}, {CT_GAP, 3}, {1, 18}, {CT_END, 0}, // 10 ding-dong-ding
-  {32, 2}, {55, 2}, {5, 2},  {CT_GAP, 2}, {5, 2}, {CT_GAP, 7}, {4, 2}, {CT_GAP, 2}, {4, 2}, {CT_GAP, 7}, {3, 14}, {CT_GAP, 3}, {9, 8}, {CT_END, 0}, // 11 double strike
-  {62, 20}, {60, 20}, {17, 40}, {52, 40}, {CT_GAP, 2}, {59, 20}, {57, 20}, {46, 40}, {48, 40}, {CT_GAP, 2}, {57, 20}, {54, 20}, {39, 40}, {48, 40}, {CT_GAP, 2}, {54, 80}, {CT_END, 0}, // 12 Nokia tune
+  {10, 6}, {0, 3},  {15, 4},  {70, 4},  {10, 6},  {49, 4},  {34, 4},  {34, 14}, {CT_END, 0}, // 8 wide leap
+  {32, 2}, {1, 6},  {CT_GAP, 3}, {68, 3}, {7, 8}, {CT_GAP, 3}, {37, 3}, {0, 8}, {CT_GAP, 3}, {1, 18}, {CT_END, 0}, // 9 ding-dong-ding
+  {32, 2}, {55, 2}, {5, 2},  {CT_GAP, 2}, {5, 2}, {CT_GAP, 7}, {4, 2}, {CT_GAP, 2}, {4, 2}, {CT_GAP, 7}, {3, 14}, {CT_GAP, 3}, {9, 8}, {CT_END, 0}, // 10 double strike
+  {62, 14}, {CT_GAP, 2}, {60, 14}, {CT_GAP, 2}, {17, 30}, {CT_GAP, 3}, {52, 30}, {CT_GAP, 3}, {59, 14}, {CT_GAP, 2}, {57, 14}, {CT_GAP, 2}, {46, 30}, {CT_GAP, 3}, {48, 30}, {CT_GAP, 3}, {57, 14}, {CT_GAP, 2}, {54, 14}, {CT_GAP, 2}, {39, 30}, {CT_GAP, 3}, {48, 30}, {CT_GAP, 3}, {54, 60}, {CT_GAP, 6}, {CT_END, 0}, // 11 Grande Valse (Nokia)
+  {20, 13}, {20, 80}, {0, 10}, {25, 10}, {68, 10}, {25, 10}, {16, 10}, {20, 10}, {25, 10}, {20, 10}, {43, 10}, {20, 10}, {16, 10}, {20, 10}, {22, 10}, {20, 20}, {CT_END, 0}, // 12 Jumping (Nokia)
+  {64, 30}, {CT_GAP, 3}, {67, 30}, {CT_GAP, 3}, {16, 30}, {CT_GAP, 3}, {10, 60}, {CT_END, 0}, // 13 Westminster short
+  {64, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {16, 30}, {CT_GAP, 2}, {10, 45}, {CT_GAP, 10}, {16, 30}, {CT_GAP, 2}, {64, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {10, 45}, {CT_GAP, 10}, {16, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {64, 30}, {CT_GAP, 2}, {16, 45}, {CT_GAP, 10}, {64, 30}, {CT_GAP, 2}, {16, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {10, 60}, {CT_END, 0}, // 14 Westminster full (Big Ben)
+  {9, 18}, {10, 35}, {CT_GAP, 25}, {9, 18}, {10, 35}, {CT_GAP, 45}, {9, 18}, {10, 35}, {CT_GAP, 45}, {9, 18}, {10, 55}, {CT_END, 0}, // 15 Cuckoo
+  {25, 15}, {25, 15}, {25, 15}, {65, 80}, {CT_GAP, 20}, {43, 15}, {43, 15}, {43, 15}, {22, 100}, {CT_GAP, 20}, {25, 15}, {25, 15}, {25, 15}, {65, 80}, {CT_GAP, 20}, {43, 15}, {43, 15}, {43, 15}, {22, 140}, {CT_END, 0}, // 16 Beethoven 5th opening
+  {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 50}, {CT_END, 0}, // 17 Time signal (six pips)
+  {38, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {38, 20}, {CT_GAP, 2}, {0, 20}, {CT_GAP, 2}, {48, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {47, 20}, {CT_GAP, 2}, {47, 20}, {CT_GAP, 2}, {47, 40}, {CT_GAP, 8}, {46, 20}, {CT_GAP, 2}, {46, 20}, {CT_GAP, 2}, {46, 40}, {CT_GAP, 8}, {39, 20}, {CT_GAP, 2}, {39, 20}, {CT_GAP, 2}, {39, 40}, {CT_GAP, 8}, {12, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {39, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {12, 45}, {CT_END, 0}, // 18 Sugar Plum Fairy
+  {68, 20}, {46, 20}, {12, 20}, {69, 20}, {12, 20}, {46, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {12, 20}, {69, 20}, {12, 20}, {46, 20}, {12, 20}, {46, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {68, 20}, {0, 20}, {46, 20}, {0, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {12, 20}, {69, 40}, {CT_END, 0}, // 19 Morning Mood
+  {38, 15}, {CT_GAP, 2}, {0, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 4}, {38, 15}, {CT_GAP, 2}, {0, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 4}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 4}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 4}, {68, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 2}, {47, 15}, {CT_GAP, 2}, {39, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 4}, {69, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {68, 30}, {CT_END, 0}, // 20 Carol of the Bells
 };
 
-byte chimeModeStart(byte target) {
-  if (target > CHIME_MODE_COUNT) target = 0;
-  byte pos = 0;
+uint16_t chimeModeStart(byte target) {
+  if (target >= CHIME_MODE_COUNT) target = 0;
+  uint16_t pos = 0;
   byte mode = 0;
   while (mode < target) {
     if (pgm_read_byte(&chimePatterns[pos].note) == CT_END) mode++;
@@ -616,9 +579,29 @@ byte chimeModeStart(byte target) {
   return pos;
 }
 
+static const byte ledColors[] PROGMEM = {3, 11, 12, 60, 48, 51, 63, 15};
+
+byte randomLEDcolor() {
+  static byte idx = 0, rnd = 0xA5;
+  rnd = rnd * 5 + 1;
+  idx = (idx + 1 + ((rnd >> 4) & 6)) & 7;   // нечётный шаг: цвет не повторяется подряд
+  return pgm_read_byte(&ledColors[idx]);
+}
+
+void startupLEDtick() {
+  static byte ci = 0;
+  static byte skip = 0;
+  if (!startupLED) return;
+  if (++skip < 8) return;              // менять цвет примерно раз в 8 нот
+  skip = 0;
+  setLEDcolor(pgm_read_byte(&ledColors[ci]));
+  if (++ci >= sizeof(ledColors)) ci = 0;
+}
+
 void playChimeSound(byte target) {
   stopAlarm();
-  byte pos = chimeModeStart(target);
+  if (!startupLED) setLED();
+  uint16_t pos = chimeModeStart(target);
   for (;;) {
     uint8_t note = pgm_read_byte(&chimePatterns[pos].note);
     uint8_t dur10 = pgm_read_byte(&chimePatterns[pos].dur10);
@@ -628,10 +611,13 @@ void playChimeSound(byte target) {
     else {
       buzzerPlayIdx = note;
       buzzerOn();
+      if (!startupLED) setLEDcolor(randomLEDcolor());   // случайный цвет на каждую ноту
     }
     delay((uint16_t)dur10 * 10);
+    startupLEDtick();
   }
   buzzerOff();
+  if (!startupLED) setLED();
 }
 
 void playRandomChime() {
@@ -654,7 +640,7 @@ void playRandomChime() {}
 #endif
 
 void touchBeep() {
-  if (!TOUCH_BEEP || alarmActive || chimeActive) return;
+  if (!TOUCH_BEEP || alarmActive || chimeActive || co2WarnBeepActive) return;
   touchBeepActive = true;
   touchBeepStart = millis();
   buzzerPlayIdx = BUZZER_FREQ_IDX;
@@ -667,6 +653,7 @@ void checkAlarm() {
   if (alarmDoneDay == now.day()) return;
   alarmDoneDay = now.day();
   alarmActive = true;
+  co2WarnBeepActive = false;
   alarmPhase = 0;
   alarmStart = millis();
   buzzerPlayIdx = BUZZER_FREQ_IDX;
@@ -687,6 +674,8 @@ void checkChime() {
   else if (snd >= CHIME_MODE_COUNT) snd = 0;
   chimePos = chimeModeStart(snd);
   chimeActive = true;
+  co2WarnBeepActive = false;
+  setLED();                         // обновить яркость и взять текущий цвет
   chimeStep = 0;
   chimeStepMs = 0;
   chimeStart = millis();
@@ -727,6 +716,7 @@ void tickBuzzer() {
       if (note == CT_END) {
         buzzerOff();
         chimeActive = false;
+        setLED();                   // вернуть цвет по датчику
         return;
       }
       if (note == CT_GAP) {
@@ -734,6 +724,7 @@ void tickBuzzer() {
       } else {
         buzzerPlayIdx = note;
         buzzerOn();
+        setLEDcolor(randomLEDcolor());   // случайный цвет на каждую ноту
       }
       chimeStepMs = (uint16_t)dur10 * 10;
       chimeStart = ms;
@@ -749,7 +740,30 @@ void tickBuzzer() {
       touchBeepActive = false;
     }
   }
+  else if (co2WarnBeepActive) {
+    if (ms - co2WarnBeepStart >= CO2_WARN_BEEP_MS) {
+      buzzerOff();
+      co2WarnBeepActive = false;
+    }
+  }
 }
+
+void checkCO2Warning() {
+  if (!co2BeepEnabled || co2Gate || dispCO2 < CO2_WARN_LEVEL) {
+    co2WarnTimer = 0;
+    return;
+  }
+  if (alarmActive || chimeActive || touchBeepActive || co2WarnBeepActive) return;
+  unsigned long ms = millis();
+  if (co2WarnTimer == 0 || (unsigned long)(ms - co2WarnTimer) >= CO2_WARN_PERIOD_MS) {
+    co2WarnTimer = ms;
+    co2WarnBeepActive = true;
+    co2WarnBeepStart = ms;
+    buzzerPlayIdx = BUZZER_FREQ_IDX;
+    buzzerOn();
+  }
+}
+
 
 void checkBrightness() {
 #if (BRIGHT_CONTROL == 0)                         // управление яркостью отключено - всегда максимум
@@ -809,7 +823,7 @@ void calibrateCo2() {                         // zero calibration CO2 with resul
     showMessage(ok ? F("Calib OK") : F("Calib ERR"), ok ? 8 : 9);
 #endif
   } else {
-    showMessage(F("Need 400 PPM"), 12);
+    showMessage(F("Need 400 ppm"), 12);
   }
   delay(1500);
 }
@@ -827,18 +841,12 @@ void drawCurrentTHP() {
   lcd.print(dispPres);
 }
 
-void drawCurrentPQ() {
-  lcd.print('P');
-  lcd.print(dispPres);
-  lcd.print(F(" Q"));
-  lcd.print(dispQnh);
-}
 #else
 void drawCurrentCTH() {
   lcd.print('C');
   if (dispCO2 >= 0) printValRight(dispCO2, 4); else lcd.print(F(" ---"));
   lcd.print(F(" T"));
-  printValRight((int)dispTemp, 3);
+  printValRight(tempInt(), 3);
   lcd.print(F(" H"));
   printValRight(dispHum, 3);
 }
@@ -861,7 +869,7 @@ void drawCalibrationConfirm() {
   lcd.setCursor(0, 2);
   drawCurrentTHP();
   lcd.setCursor(0, 3);
-  lcd.print(F("400ppm 2x=Y 1x=N"));
+  lcd.print(F("400ppm?  2x=Y  1x=N"));
 #else
   lcd.setCursor(0, 0);
   drawCurrentCTH();
@@ -871,11 +879,7 @@ void drawCalibrationConfirm() {
 }
 
 void drawBrightnessBar(byte b, byte row) {
-#if (DISPLAY_TYPE == 1)
-  lcd.setCursor(4, row);
-#else
-  lcd.setCursor(2, row);
-#endif
+  lcd.setCursor(2, row);                // та же колонка, что и у значения
   if (b == 11) {
     lcd.print(F("[   AUTO   ]"));
     return;
@@ -886,21 +890,38 @@ void drawBrightnessBar(byte b, byte row) {
 }
 
 void drawIndicatorMode() {
+  if (podMode == 4) {                   // пятый экран LED Mode: предупреждение CO2
+    lcd.setCursor(0, 0);
+    lcd.print(F("CO2 Beep"));
+#if (DISPLAY_TYPE == 1)
+    lcd.setCursor(16, 0);
+    lcd.print(F("EDIT"));
+    lcd.setCursor(2, 1);
+    lcd.print(co2BeepEnabled ? F("ON") : F("OFF"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("CO2 warning beep"));
+    lcd.setCursor(0, 3);
+    lcd.print(F("1x change  2x back"));
+#else
+    lcd.setCursor(0, 1);
+    lcd.print(co2BeepEnabled ? F("ON") : F("OFF"));
+#endif
+    return;
+  }
   LEDType = podMode;
   if (!alarmActive && !chimeActive) setLED();   // сразу показать цвет нового режима
   lcd.setCursor(0, 0);
   lcd.print(F("LED Mode"));
 #if (DISPLAY_TYPE == 1)
   lcd.setCursor(16, 0);
-  lcd.print(F("SET"));
+  lcd.print(F("EDIT"));
 #endif
   lcd.setCursor(2, 1);
   printSensorName();
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 2);
+  lcd.setCursor(2, 2);                  // текущее значение (название датчика уже в строке выше)
   switch (LEDType) {
     case 0:
-      lcd.print(F("CO2 "));
       if (co2Gate) lcd.print(F("---"));
       else lcd.print(dispCO2);
       lcd.print(F(" ppm"));
@@ -914,39 +935,21 @@ void drawIndicatorMode() {
 #endif
 }
 
-void drawLcdBrightness() {
-  lcd.setCursor(0, 0);
-  lcd.print(F("LCD Bright"));
-#if (DISPLAY_TYPE == 1)
-  lcd.setCursor(16, 0);
-  lcd.print(F("SET"));
-  lcd.setCursor(2, 1);
-  printBrightness(LCD_BRIGHT);
-  drawBrightnessBar(LCD_BRIGHT, 2);
-  lcd.setCursor(0, 3);
-  lcd.print(F("1x change  2x back"));
-#else
-  lcd.setCursor(12, 0);
-  printBrightness(LCD_BRIGHT);
-  drawBrightnessBar(LCD_BRIGHT, 1);
-#endif
-}
-
-void drawLedBrightness() {
+void drawBrightness(byte b) {
   lcd.setCursor(0, 0);
   lcd.print(F("LED Bright"));
 #if (DISPLAY_TYPE == 1)
   lcd.setCursor(16, 0);
-  lcd.print(F("SET"));
+  lcd.print(F("EDIT"));
   lcd.setCursor(2, 1);
-  printBrightness(LED_BRIGHT);
-  drawBrightnessBar(LED_BRIGHT, 2);
+  printBrightness(b);
+  drawBrightnessBar(b, 2);
   lcd.setCursor(0, 3);
   lcd.print(F("1x change  2x back"));
 #else
   lcd.setCursor(12, 0);
-  printBrightness(LED_BRIGHT);
-  drawBrightnessBar(LED_BRIGHT, 1);
+  printBrightness(b);
+  drawBrightnessBar(b, 1);
 #endif
 }
 
@@ -957,29 +960,28 @@ void nextMainScreen() {
 #endif
   if (mode0scr == 5 || mode0scr == 6) mode0scr = 7;   // dew/heat удалены
 #if (DISPLAY_TYPE == 1)
-  if (mode0scr == 8) mode0scr = 9;      // 8-й экран только для 1602
+  if (mode0scr > 7) mode0scr = 0;
+#else
+  if (mode0scr > 8) mode0scr = 0;
 #endif
-  if (mode0scr > 9) mode0scr = 0;
 }
 
 void enterMenuItem() {
   if (podMode == 3) {                         // Save
     saveSettings();
+    showMessage(F("Settings saved"), 14);     // подтверждение, как у калибровки CO2
+    delay(800);
     mode = 0;
   } else if (podMode == 4) {                  // Exit
     mode = 0;
-  } else if (podMode >= 5 && podMode <= 7) {  // indicator/LCD brightness, indicator mode
-    if (podMode == 5) mode = 254;             // LED Br
-    else if (podMode == 6) mode = 253;        // LCD Br
-    else mode = 252;                          // LED Mode
-    if (mode == 254) podMode = LED_BRIGHT;
-    else if (mode == 253) podMode = LCD_BRIGHT;
-    else podMode = LEDType;
-  } else if (podMode == 8) {                  // CO2 zero calibration
+  } else if (podMode >= 5 && podMode <= 6) {  // LED brightness, LED mode
+    if (podMode == 5) { mode = 254; podMode = LED_BRIGHT; }
+    else { mode = 252; podMode = LEDType; }
+  } else if (podMode == 7) {                  // CO2 zero calibration
 #if (CO2_SENSOR == 1)
     mode = 251;                               // сначала спрашиваем подтверждение
 #endif
-  } else if (podMode == 1 || podMode == 2 || podMode == 9) { // Alarm, Chime, Altitude
+  } else if (podMode == 1 || podMode == 2) { // Alarm, Chime
     beginEdit(podMode);
   }
   // Не даём тому же удержанию, которым вошли в пункт, сразу начать
@@ -990,12 +992,11 @@ void enterMenuItem() {
 /*
   mode:
   0 - main screen
-  240 - generic editor (podMode 1,2,9; 1 = alarm)
+  240 - generic editor (podMode 1,2; 1 = alarm)
   251 - CO2 calibration confirmation (yes/no)
   252 - indicator mode (podMode 0-3: CO2, humidity, temperature, pressure)
-  253 - LCD brightness (podMode 0-11: 0-100% or auto)
   254 - indicator brightness (podMode 0-11: 0-100% or auto)
-  255 - setup menu (podMode 1..9)
+  255 - setup menu (podMode 1..7)
 */
 void modesTick() {
   button.tick();
@@ -1017,7 +1018,8 @@ void modesTick() {
     return;
   }
 
-  if (pressed) touchBeep();
+  if (button.isRelease()) editGuard = false;      // кнопку, которой вошли в редактор, отпустили
+  if (pressed) { touchBeep(); alarmStepCnt = 0; }
   if (pressed && mode >= 240) menuActivity = millis();
   if (mode >= 240 && button.isHold()) menuActivity = millis();   // не считаем удержание простоем
 
@@ -1028,50 +1030,46 @@ void modesTick() {
       showMessage(F("Cancelled"), 9);
       delay(800);
       mode = 255;
-      podMode = 8;
+      podMode = 7;
       changeFlag = true;
     } else if (mode == 0) {
       nextMainScreen();
       changeFlag = true;
     } else if (mode == 240) {
       if (podMode == 1) {
-        if (alarmField == 3) {          // SET: применить и выйти в меню настроек
-          finishEdit();
-          mode = 255;
-          menuActivity = millis();
-        } else {
-          alarmEditStep();
-        }
+        alarmEditStep(false);           // 1x: +1 / переключить ON-OFF
+        drawAlarmFields();              // перерисовываем только строку полей, без мерцания
       } else {
-        editDirection = 1;
-        editRepeatCount = 0;
-        editApply(editStep);
+        editApply(1);
+        changeFlag = true;
       }
-      changeFlag = true;
     } else if (mode >= 252) {
-      podMode++;
-      switch (mode) {
-        case 252:             // режим LED индикатора
-          if (podMode > 3) podMode = 0;
-          LEDType = podMode;
-          changeFlag = true;
-          break;
-        case 253:             // яркость LCD экрана
-          if (podMode > 11) podMode = 0;
-          LCD_BRIGHT = podMode;
-          checkBrightness();
-          changeFlag = true;
-          break;
-        case 254:             // яркость LED индикатора
-          if (podMode > 11) podMode = 0;
-          LED_BRIGHT = podMode;
-          setLED();
-          changeFlag = true;
-          break;
-        case 255:             // пункт главного меню
-          if (podMode > 9) podMode = 1;
-          changeFlag = true;
-          break;
+      if (mode == 252) {
+        if (podMode == 4) {
+          co2BeepEnabled = !co2BeepEnabled;
+        } else {
+          podMode++;
+          if (podMode > 4) podMode = 0;
+          if (podMode <= 3) {
+            LEDType = podMode;
+            setLED();
+          }
+        }
+        changeFlag = true;
+      } else {
+        podMode++;
+        switch (mode) {
+          case 254:             // яркость LED индикатора
+            if (podMode > 11) podMode = 0;
+            LED_BRIGHT = podMode;
+            setLED();
+            changeFlag = true;
+            break;
+          case 255:             // пункт главного меню
+            if (podMode > 7) podMode = 1;
+            changeFlag = true;
+            break;
+        }
       }
     }
   }
@@ -1082,7 +1080,7 @@ void modesTick() {
       calibrateCo2();
 #endif
       mode = 255;
-      podMode = 8;
+      podMode = 7;
       changeFlag = true;
     } else if (mode == 0) {
       mode = 255;                             // вход в меню
@@ -1093,28 +1091,33 @@ void modesTick() {
       if (podMode == 3 || podMode == 4) {
         enterMenuItem();                     // Save/Exit — можно и 2x
       } else {
-        podMode = (podMode <= 1) ? 9 : podMode - 1;   // 2x: предыдущий пункт
+        podMode = (podMode <= 1) ? 7 : podMode - 1;   // 2x: предыдущий пункт
       }
       changeFlag = true;
     } else if (mode == 240) {
-      if (podMode != 1) {
-        editDirection = -1;
-        editRepeatCount = 0;
-        editApply(-editStep);
+      if (podMode == 1) {
+        if (alarmField < 2) {           // 2x: следующее поле
+          alarmField++;
+          drawAlarmFields();
+          drawAlarmHint();
+        } else {                        // 2x на ON/OFF: готово, сохранить и выйти в меню
+          finishEdit();
+          mode = 255;
+          menuActivity = millis();
+          changeFlag = true;
+        }
+      } else {
+        editApply(-1);
+        changeFlag = true;
       }
-      changeFlag = true;
-    } else if (mode >= 252 && mode <= 254) {
+    } else if (mode == 252 || mode == 254) {
       returnToMenu();
       changeFlag = true;
     }
   }
 
   if (button.isTriple()) {
-    if (mode == 240 && podMode == 9) {         // 3x: назад в меню (только Altitude)
-      finishEdit();
-      mode = 255;
-      changeFlag = true;
-    } else if (mode == 0) {                   // тройное нажатие: вход в настройки
+    if (mode == 0) {                          // тройное нажатие: вход в настройки
       mode = 255;
       podMode = 1;
       menuActivity = millis();
@@ -1123,6 +1126,7 @@ void modesTick() {
   }
 
   if (button.isHolded() && mode != 251) {     // удержание кнопки (не подтверждает калибровку)
+    boolean holdStep = false;
     switch (mode) {
       case 0:
         bigDig = !bigDig;
@@ -1133,21 +1137,13 @@ void modesTick() {
           mode = 255;
           menuActivity = millis();
           button.resetStates();                 // не даём этому же удержанию уйти дальше
-        } else if (podMode == 1) {
-          if (alarmField == 3) {                    // SET: применить и выйти в меню
-            finishEdit();
-            mode = 255;
-            menuActivity = millis();
-          } else {
-            alarmField = (alarmField + 1) % 4;      // удержание: следующее поле
-          }
-        } else {
-          editRepeatCount = 0;
-          editApply(editDirection > 0 ? editStep : -editStep);
+        } else if (podMode == 1 && !editGuard && alarmField < 2) {    // удержание: быстрое изменение (автоповтор)
+          alarmEditStep(true);
+          drawAlarmFields();
+          holdStep = true;
         }
         break;
       case 252:       // реж. индикатора
-      case 253:       // ярк. экрана
       case 254:       // ярк. индикатора
         returnToMenu();
         break;
@@ -1155,15 +1151,12 @@ void modesTick() {
         enterMenuItem();
         break;
     }
-    changeFlag = true;
+    if (!holdStep) changeFlag = true;       // шаг в редакторе Alarm не требует полной перерисовки
   }
 
-  // Авто-повтор удержания только для числового редактора Altitude.
-  if (mode == 240 && podMode == 9 && button.isStep()) {
-    if (editRepeatCount < 255) editRepeatCount++;
-    int16_t step = (editRepeatCount > 10) ? editBigStep : editStep;
-    editApply(editDirection > 0 ? step : -step);
-    changeFlag = true;
+  if (mode == 240 && podMode == 1 && !editGuard && alarmField < 2 && button.isStep()) {   // удержание: автоповтор
+    alarmEditStep(true);
+    drawAlarmFields();
   }
 
 #if (RESET_CLOCK == 0)
@@ -1177,20 +1170,15 @@ void modesTick() {
 #endif
 
   if (changeFlag) {
-    boolean repeatOnly = (mode == 240 && editRepeatCount > 0);
-    if (mode >= 240 && !repeatOnly) {
+    if (mode >= 240) {
       lcd.clear();
       lcd.setCursor(0, 0);
     }
     if (mode == 255) drawMenu();
     else if (mode == 251) drawCalibrationConfirm();
     else if (mode == 252) drawIndicatorMode();
-    else if (mode == 253) drawLcdBrightness();
-    else if (mode == 254) drawLedBrightness();
-    else if (mode == 240) {
-      if (repeatOnly) drawEditValueLine();
-      else drawEdit();
-    }
+    else if (mode == 254) drawBrightness(LED_BRIGHT);
+    else if (mode == 240) drawEdit();
     else if (mode == 0) {
       lcd.clear();
       loadClock();
@@ -1213,9 +1201,7 @@ void readSensors() {
     if (hh < 0) hh = 0;
     if (hh > 100) hh = 100;
     dispHum = (byte)hh;
-    stationHpa = p / 100.0;
-    dispPres = (int)(stationHpa * 0.750062 + 0.5);
-    updateQnh();
+    dispPres = (int)(p * 0.00750062 + 0.5);
   }
 
 #if (CO2_SENSOR == 1)
@@ -1228,21 +1214,19 @@ void readSensors() {
   if (millis() > CO2_WARMUP_MS) co2Gate = false;
   if (dispCO2 < 0 || dispCO2 > 4000) co2Gate = true;
 
+  checkCO2Warning();
   statsTick();
 
 #if (DEBUG == 1)
   Serial.print(F("CO2=")); Serial.print(dispCO2);
   Serial.print(F(" T=")); Serial.print(dispTemp, 1);
   Serial.print(F(" H=")); Serial.print(dispHum, 1);
-  Serial.print(F(" P=")); Serial.print(dispPres);
-  Serial.print(F(" QNH=")); Serial.println(dispQnh);
+  Serial.print(F(" P=")); Serial.println(dispPres);
 #endif
 
-  // Живое обновление значения на экране Altitude.
+  // Живое обновление значения на экране калибровки.
   if (lcdReady) {
-    if (mode == 240 && podMode == 9) {
-      drawEdit();
-    } else if (mode == 251) {
+    if (mode == 251) {
       drawCalibrationConfirm();
     }
   }
@@ -1280,7 +1264,6 @@ void drawSensors() {
 #if (DISPLAY_TYPE == 1)
   // дисплей 2004 ----------------------------------
   if (mode0scr == 7) { drawStatsAll(); return; }
-  if (mode0scr == 9) { drawQnh(); return; }
 
   if (bigDig) {
     // Крупное значение слева, справа — ровная колонка остальных датчиков.
@@ -1288,7 +1271,7 @@ void drawSensors() {
     if (mode0scr != 2) {
       lcd.setCursor(16, row++);
       lcd.print('T');
-      printValRight((int)dispTemp, 3);
+      printValRight(tempInt(), 3);
     }
     if (mode0scr != 4) {
       lcd.setCursor(16, row++);
@@ -1338,7 +1321,7 @@ void drawSensors() {
 
   if (mode0scr != 2) {                        // Температура ----------------------------
     lcd.setCursor(0, 2);
-    lcd.print(F("T "));
+    lcd.print('T');                           // T/H сдвинуты влево: место для пробела перед CO2
     printTempField(dispTemp, 5);
     lcd.write(223);
   } else {
@@ -1346,7 +1329,7 @@ void drawSensors() {
   }
 
   if (mode0scr != 4) {                        // Влажность ----------------------------
-    lcd.setCursor(8, 2);
+    lcd.setCursor(7, 2);
     lcd.print('H');
     printValRight(dispHum, 3);
     lcd.print('%');
@@ -1356,9 +1339,10 @@ void drawSensors() {
 
 #if (CO2_SENSOR == 1)
   if (mode0scr != 1) {                       // СО2 ----------------------------
-    lcd.setCursor(13, 2);
-    if (co2Gate) lcd.print(F(" ---ppm"));
-    else { printValRight(dispCO2, 4); lcd.print(F("ppm")); }
+    lcd.setCursor(12, 2);                    // пробел между % и ppm
+    lcd.print(' ');
+    if (co2Gate) lcd.print(F("---ppm"));
+    else { printValRight(dispCO2, dispCO2 >= 1000 ? 4 : 3); lcd.print(F("ppm")); }
   } else {
     drawPPM(dispCO2, 0, 0);
     lcd.setCursor(14, 2);
@@ -1388,7 +1372,6 @@ void drawSensors() {
   // дисплей 1602 ----------------------------------
   if (mode0scr == 7) { drawStatsTH(); return; }
   if (mode0scr == 8) { drawStatsPC(); return; }
-  if (mode0scr == 9) { drawQnh(); return; }
 
   if (!bigDig) {              // если только мелкими цифрами (с)НР
     lcd.setCursor(0, 0);
@@ -1485,14 +1468,12 @@ void clockTick() {
     }
   }
 
-  if (alarmActive || chimeActive) {
+  if (alarmActive) {
     setLED();                       // обновить LED_ON (яркость/авто)
-    if (alarmActive) {
-      if (dotFlag) setLEDcolor(48); // синий
-      else setLEDcolor(0);
-    } else {
-      setLEDcolor(48);              // короткий сигнал — синяя вспышка
-    }
+    if (dotFlag) setLEDcolor(48);   // синий
+    else setLEDcolor(0);
+  } else if (chimeActive) {
+    // цвет уже меняется на каждой ноте в tickBuzzer()/playChimeSound()
   } else if ((((dispCO2 >= blinkLEDCO2) && LEDType == 0) || ((dispHum <= blinkLEDHum) && LEDType == 1) || ((dispTemp >= blinkLEDTemp) && LEDType == 2)) && !dotFlag) {
     setLEDcolor(0);                 // мигание индикатора при выходе за порог
   } else {
