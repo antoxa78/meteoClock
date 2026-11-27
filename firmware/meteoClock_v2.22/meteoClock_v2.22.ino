@@ -27,7 +27,33 @@
   - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
 */
 
-/* Версия 2.21 (удобный редактор будильника)
+/* Версия 2.22 (звук мелодий и сигналов)
+  - Строй: ноты задаются номерами MIDI, период считается из таблицы одной октавы
+    с подбором предделителя Timer2; ошибка высоты <= ~7 центов (раньше до 50,
+    часть нот звучала фальшиво)
+  - Естественное звучание: спад громкости нот (колокольчик, челеста, музыкальная
+    шкатулка) через скважность меандра; тембр задаётся CT_VOICE в таблице
+  - Артикуляция: между повторяющимися нотами автоматическая короткая пауза,
+    флаг CT_LEGATO даёт связное звучание (Morning Mood, пипы, глиссандо гонга)
+  - Ритм: секвенсор считает время по идеальной шкале, задержки loop() не копятся;
+    пока играет мелодия, опрос датчиков и перерисовка откладываются
+  - Мелодии пересобраны: Happy Birthday и Jingle Bells с пунктирным ритмом,
+    Westminster — настоящие смены (1 для четверти, 2-3-4-5 для часа),
+    Time signal — пять пипов по 100 мс + длинный, Morning Mood — исправлена октава
+  - Нумерация сигналов 0..20 и Random не изменилась, EEPROM совместим
+  - Будильник и короткие писки — теми же нотами (B7 / D7)
+  - Крупные цифры (2004 и 1602) перерисованы: ровные перекладины по центру,
+    у 7 вертикаль больше не смещается; на 2004 — крупные точка, знак %
+    (диагональ — штатная «/») и двоеточие часов; минус крупный в обоих режимах
+  - Крупные экраны: у температуры появился °C; у CO2 на 2004 вместо времени
+    выводится ppm (на 1602 для полного «ppm» нет места, остаётся «p»)
+  - На крупном экране CO2 убрано мигание секундного двоеточия поверх «ppm»;
+    RGB-индикатор по-прежнему мигает с секундами
+  - Предупреждение CO2: три писка по 150 мс с паузами, раз в 2 минуты
+  - Flash ~30 620 байт (99%), RAM ~917 байт (для 2004)
+    Для 1602 — ~28 344 байта; RESET_CLOCK 1 — ~29 170 байт (оценка по avr-gcc 7.3)
+
+  Версия 2.21 (удобный редактор будильника)
   - Редактор Alarm: поля только Часы -> Минуты -> ON/OFF (поле SET убрано)
   - 1x: +1 к полю (на ON/OFF переключает); удержание: быстрый автоповтор
     (минуты после ~8 шагов идут по 5; на ON/OFF удержание не действует);
@@ -205,8 +231,7 @@
 #define BUZZER_BRIDGE_PIN 11  // D11 = PB3; не использовать вместе с SPI
 #define BUZZER_BRIDGE_PORT PORTB
 #define BUZZER_BRIDGE_BIT PB3
-#define BUZZER_FREQ_IDX 5     // 5 = 4000 Гц (резонанс пьезо); меню частоты удалено для flash
-#define BUZZER_NOTE_COUNT 71  // 7 штатных + 64 дополнительных частот для сигналов
+#define BUZZER_FREQ_IDX 107   // нота сигнала (MIDI): 107 = B7 = 3951 Гц, около резонанса пьезо
 #define ALARM_MAX_MS 60000UL  // автоотключение будильника, мс
 #define ALARM_STEP_MS 220     // длительность одной фазы двухтонального будильника
 #define TOUCH_BEEP 1          // 1 - короткий писк при нажатии кнопки
@@ -246,7 +271,9 @@ byte LED_BRIGHT = 10;         // при отсутствии сохранени�
 #define blinkLEDCO2 1500  // Значение СО2, при превышении которого будет мигать индикатор
 #define CO2_WARN_LEVEL maxCO2      // критический уровень CO2 для предупреждающего писка
 #define CO2_WARN_PERIOD_MS 120000UL // период предупреждения, мс
-#define CO2_WARN_BEEP_MS 150       // длительность короткого писка, мс
+#define CO2_WARN_BEEPS 3           // сколько писков подряд
+#define CO2_WARN_BEEP_MS 150       // длительность одного писка, мс
+#define CO2_WARN_GAP_MS 150        // пауза между писками, мс
 
 #define minTemp 21        // и ниже для синего индикатора
 #define normTemp 26       // и выше - желтый
@@ -298,7 +325,7 @@ int16_t chimeEnabled = 0;
 int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..20 или CHIME_RANDOM)
 int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..21 = сигнал 0..20, 22 = Random
 uint16_t rngState = 0xACE1;                      // состояние генератора для Chime → Random
-byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота (будильник/сигнал)
+byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота MIDI (будильник/сигнал)
 
 
 // адрес BME280: у стоковых модулей 0x77, у китайских 0x76.
@@ -401,18 +428,16 @@ boolean alarmActive = false;
 boolean chimeActive = false;
 boolean startupLED = false;            // перелив RGB при запуске
 boolean co2BeepEnabled = true;         // предупреждающий писк при критическом CO2
-boolean co2WarnBeepActive = false;     // сейчас звучит короткий писк CO2
+boolean co2WarnBeepActive = false;     // сейчас идёт серия писков CO2
+byte co2WarnPhase = 0;                 // 0,2,4... — писк; 1,3... — пауза
 unsigned long co2WarnTimer = 0;        // время последнего предупреждения
-unsigned long co2WarnBeepStart = 0;    // начало текущего писка
+unsigned long co2WarnBeepStart = 0;    // начало текущей фазы писка/паузы
 byte alarmPhase = 0;
-byte chimeStep = 0;
 uint16_t chimePos = 0;                 // позиция в таблице chimePatterns (таблица > 255 шагов)
-uint16_t chimeStepMs = 0;              // длительность текущего шага сигнала
 boolean touchBeepActive = false;
 unsigned long touchBeepStart = 0;
 boolean ignoreClick = false;          // проглотить клик, которым остановили будильник
 unsigned long alarmStart = 0;
-unsigned long chimeStart = 0;
 byte alarmDoneDay = 0;
 byte lastChimeHour = 255;
 
@@ -431,28 +456,31 @@ byte lastChimeHour = 255;
   Давление: +-1 Па
 */
 
-// символы для крупных цифр
-byte row5[8] = {0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};   // в т.ч. для четырехстрочных цифр 2, 3, 4, 5, 6, 8, 9, 0 (с)НР
-byte row3[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111};   // в т.ч. для двустрочной цифры 0, для четырехстрочных цифр 2, 3, 4, 5, 6, 8, 9 (с)НР
-byte row2[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111};   // в т.ч. для двустрочной цифры 4 (с)НР
+// Символы для крупных цифр. Вертикальные штрихи — целые знакоместа 5x8,
+// горизонтальные — 5 строк (2004) или 3 строки (1602). Все штрихи одной
+// цифры лежат в общей полосе, поэтому перекладины ровные.
+uint8_t barTop4[8] = {0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000};  // верхние 5 строк
+uint8_t barBot4[8] = {0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111,  0b11111,  0b11111};  // нижние 5 строк
+uint8_t barTop2[8] = {0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000};  // верхние 3 строки (низ перекладины на 2004)
+uint8_t barBot2[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111};  // нижние 3 строки
+uint8_t barUp2[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111};  // верх перекладины (2 строки)
+uint8_t barDown2[8] = {0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000};  // низ перекладины (1 строка)
+uint8_t barTopMid2[8] = {0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111}; // верхний штрих + верх перекладины
+uint8_t barMidBot2[8] = {0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111}; // низ перекладины + нижний штрих
+uint8_t dotLo[8] = {0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b01110,  0b01110,  0b01110};    // крупная точка внизу
+uint8_t dotHi[8] = {0b01110,  0b01110,  0b01110,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000};    // крупная точка вверху (для %)
 
-// цифры //  (с)НР
-uint8_t UB[8] = {0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000};   // для двустрочных 7, 0   // для четырехстрочных 2, 3, 4, 5, 6, 8, 9
-uint8_t UMB[8] = {0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111};  // для двустрочных 2, 3, 5, 6, 8, 9
-uint8_t LMB[8] = {0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b11111,  0b11111,  0b11111};  // для двустрочных 2, 3, 5, 6, 8, 9
-uint8_t LM2[8] = {0b11111,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000,  0b00000};  // для двустрочной 4
-uint8_t UT[8] = {0b11111,  0b11111,  0b11111,  0b11111,  0b11111,  0b00000,  0b00000,  0b00000};   // для четырехстрочных 2, 3, 4, 5, 6, 7, 8, 9, 0
-
-uint8_t KU[8] = {0b00000,  0b00000,  0b00000,  0b00001,  0b00010,  0b00100,  0b01000,  0b10000};   // для верхней части %
-uint8_t KD[8] = {0b00001,  0b00010,  0b00100,  0b01000,  0b10000,  0b00000,  0b00000,  0b00000};   // для нижней части %
-
-// Иконки меню (свободные ячейки 6 и 7)
+// Иконки меню (ячейки 6 и 7)
 uint8_t alarmIcon[8] = {0b00100, 0b01110, 0b01110, 0b01110, 0b11111, 0b00100, 0b00000, 0b00000};
 uint8_t chimeIcon[8] = {0b00110, 0b00101, 0b00100, 0b00100, 0b01100, 0b11100, 0b11100, 0b00000};
 
 // русские буквы (с)НР
 
 // Сегменты крупных цифр: по 3 байта на строку.
+// 0 — верхний штрих (5 строк), 1 — верхняя половина перекладины,
+// 2 — нижняя половина перекладины, 3 — нижний штрих (5 строк),
+// 255 — полный блок, 32 — пустая клетка. Перекладина собрана из 1+2
+// и лежит ровно по центру цифры, без ступеньки.
 static const uint8_t dig4[11][12] PROGMEM = {
   {255, 0, 255, 255, 32, 255, 255, 32, 255, 255, 3, 255},
   {32, 255, 32, 32, 255, 32, 32, 255, 32, 32, 255, 32},
@@ -461,12 +489,15 @@ static const uint8_t dig4[11][12] PROGMEM = {
   {255, 32, 255, 255, 1, 255, 2, 2, 255, 32, 32, 255},
   {255, 0, 0, 255, 1, 1, 2, 2, 255, 3, 3, 255},
   {255, 0, 0, 255, 1, 1, 255, 2, 255, 255, 3, 255},
-  {0, 0, 255, 32, 32, 255, 32, 255, 32, 32, 255, 32},
+  {0, 0, 255, 32, 32, 255, 32, 32, 255, 32, 32, 255},
   {255, 0, 255, 255, 1, 255, 255, 2, 255, 255, 3, 255},
   {255, 0, 255, 255, 1, 255, 2, 2, 255, 3, 3, 255},
   {32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32},
 };
 
+// 1 — верхний штрих (3 строки), 2 — нижний штрих (3 строки),
+// 3 — верхний штрих + верх перекладины, 4 — низ перекладины + нижний штрих,
+// 0 и 5 — половины перекладины для цифры 4; 255 — полный блок, 32 — пусто.
 static const uint8_t dig2[11][6] PROGMEM = {
   {255, 1, 255, 255, 2, 255},
   {32, 255, 32, 32, 255, 32},
@@ -475,7 +506,7 @@ static const uint8_t dig2[11][6] PROGMEM = {
   {255, 0, 255, 5, 5, 255},
   {255, 3, 3, 4, 4, 255},
   {255, 3, 3, 255, 4, 255},
-  {1, 1, 255, 32, 255, 32},
+  {1, 1, 255, 32, 32, 255},
   {255, 3, 255, 255, 4, 255},
   {255, 3, 255, 4, 4, 255},
   {32, 32, 32, 32, 32, 32},
@@ -537,22 +568,20 @@ void drawTemp(float dispTemp, byte x, byte y) { // Температура кру
     return;
   }
   boolean neg = (dispTemp < 0);
-  if (neg) dispTemp = -dispTemp;
+  if (neg) {
+    dispTemp = -dispTemp;
+    drawDig(10, x, y);                          // стираем старые цифры и прежний минус
+    byte mx = (dispTemp >= 10) ? x : x + 2;     // одиночную цифру минус почти не отрывает
+    lcd.setCursor(mx, (bigDig && DISPLAY_TYPE == 1) ? y + 2 : y);
+    lcd.write(2);               // крупный минус (штрих 5x3)
+  }
   byte shift = (neg && dispTemp >= 10) ? 1 : 0;
   if (dispTemp / 10 == 0) {
-    if (neg) {
-      lcd.setCursor(x, y + 1);
-      lcd.write(45);          // знак минус для отрицательной температуры (с)НР
-    } else drawDig(10, x, y);
+    if (!neg) drawDig(10, x, y);
     drawDig(int(dispTemp) % 10, x + 4, y);
   } else {
-    if (neg) {
-      lcd.setCursor(x, y + 1);
-      lcd.write(45);
-      drawDig(dispTemp / 10, x + 1, y);
-    } else {
-      drawDig(dispTemp / 10, x, y);
-    }
+    if (neg) drawDig(dispTemp / 10, x + 1, y);
+    else drawDig(dispTemp / 10, x, y);
     drawDig(int(dispTemp) % 10, x + 4 + shift, y);
   }
   drawDig(int(dispTemp * 10.0) % 10, x + 9, y);
@@ -560,7 +589,7 @@ void drawTemp(float dispTemp, byte x, byte y) { // Температура кру
   byte px = x + 7 + shift;
   if (bigDig && DISPLAY_TYPE == 1) {
     lcd.setCursor(px, y + 3);
-    lcd.write(1);             // десятичная точка
+    lcd.write(4);             // крупная десятичная точка
     if (!shift) { lcd.setCursor(px + 1, y + 3); lcd.print(' '); }
   }
   else {
@@ -570,6 +599,7 @@ void drawTemp(float dispTemp, byte x, byte y) { // Температура кру
   }
   lcd.setCursor(x + 13, y);
   lcd.write(223);             // градусы
+  lcd.print('C');             // °C
 }
 
 void drawHum(int dispHum, byte x, byte y) {   // Влажность крупно на главном экране (с)НР ----------------------------
@@ -578,9 +608,11 @@ void drawHum(int dispHum, byte x, byte y) {   // Влажность крупно
   drawDig(int(dispHum) % 10, x + 8, y);
   if (bigDig && DISPLAY_TYPE == 1) {
     lcd.setCursor(x + 12, y + 1);
-    lcd.print("\245\4");
+    lcd.write(5);             // верхняя точка %
+    lcd.write('/');           // диагональ % (штатный знак LCD)
     lcd.setCursor(x + 12, y + 2);
-    lcd.print("\5\245");
+    lcd.write('/');
+    lcd.write(4);             // нижняя точка %
   }
   else {
     lcd.setCursor(x + 12, y + 1);
@@ -678,23 +710,21 @@ void printTemp(float t) {          // вывод температуры с од�
 
 void loadClock() {
   if (bigDig && (DISPLAY_TYPE == 1)) {              // для четырехстрочных цифр (с)НР
-    lcd.createChar(0, UT);
-    lcd.createChar(1, row3);
-    lcd.createChar(2, UB);
-    lcd.createChar(3, row5);
-    lcd.createChar(4, KU);
-    lcd.createChar(5, KD);
+    lcd.createChar(0, barTop4);
+    lcd.createChar(1, barUp2);    // верхняя половина перекладины
+    lcd.createChar(2, barTop2);   // нижняя половина перекладины
+    lcd.createChar(3, barBot4);
+    lcd.createChar(4, dotLo);     // десятичная точка, нижняя точка %
+    lcd.createChar(5, dotHi);     // верхняя точка %, верхнее двоеточие
   }
   else {                                            // для двустрочных цифр (с)НР
-    lcd.createChar(0, row2);
-    lcd.createChar(1, UB);
-    lcd.createChar(2, row3);
-    lcd.createChar(3, UMB);
-    lcd.createChar(4, LMB);
-    lcd.createChar(5, LM2);
+    lcd.createChar(0, barUp2);      // верх перекладины (для 4)
+    lcd.createChar(1, barTop2);     // верхний штрих
+    lcd.createChar(2, barBot2);     // нижний штрих
+    lcd.createChar(3, barTopMid2);  // верхний штрих + верх перекладины
+    lcd.createChar(4, barMidBot2);  // низ перекладины + нижний штрих
+    lcd.createChar(5, barDown2);    // низ перекладины (для 4)
   }
-
-
 }
 
 #if (LED_MODE == 0)
@@ -875,11 +905,11 @@ void setup() {
   lcd.clear();
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.21"));
+  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.22"));
   lcd.setCursor(0, 1); lcd.print(F("Compiled:")); lcd.print(F(__DATE__));
   lcd.setCursor(3, 2); lcd.print(F("Time ")); lcd.print(F(__TIME__));
 #else
-  lcd.setCursor(0, 0); lcd.print(F("v2.21")); lcd.print(F(__DATE__));
+  lcd.setCursor(0, 0); lcd.print(F("v2.22")); lcd.print(F(__DATE__));
   lcd.setCursor(4, 1); lcd.print(F(__TIME__));
 #endif
   setLED();                           // применить сохранённую яркость
@@ -1017,7 +1047,9 @@ void loop() {
   serialTick();                                       // приём команд установки времени с ПК (с)НР
   tickBuzzer();                                       // будильник / почасовой сигнал
   if (testTimer(brightTimerD, brightTimer)) checkBrightness();  // яркость
-  if (testTimer(sensorsTimerD, sensorsTimer)) readSensors();    // читаем показания датчиков с периодом SENS_TIME
+  // Пока играет мелодия, опрос датчиков и перерисовка откладываются: чтение MH-Z19
+  // занимает до 200 мс и сбивало бы ритм (см. v2.22).
+  if (!chimeActive && testTimer(sensorsTimerD, sensorsTimer)) readSensors();    // читаем показания датчиков с периодом SENS_TIME
 #if (DEBUG == 1)
   Serial.println(dispTemp);
 #endif
@@ -1025,6 +1057,6 @@ void loop() {
   if (testTimer(clockTimerD, clockTimer)) clockTick();          // два раза в секунду пересчитываем время и мигаем точками
   modesTick();                                      // тут ловим нажатия на кнопку и переключаем режимы
   if (mode == 0) {                                  // в режиме "главного экрана"
-    if (testTimer(drawSensorsTimerD, drawSensorsTimer)) drawSensors();  // обновляем показания датчиков на дисплее с периодом SENS_TIME
+    if (!chimeActive && testTimer(drawSensorsTimerD, drawSensorsTimer)) drawSensors();  // обновляем показания датчиков на дисплее с периодом SENS_TIME
   }
 }

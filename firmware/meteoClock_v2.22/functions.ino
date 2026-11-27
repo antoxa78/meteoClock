@@ -13,48 +13,50 @@ void drawEditValueLine();
 boolean editGuard = false;      // true: кнопка, которой вошли в редактор, ещё не отпущена (не даём автоповтору сработать)
 byte alarmStepCnt = 0;          // номер шага автоповтора (минуты ускоряются)
 
-// Частоты для пассивного пьезо и готовые значения OCR2A для Timer2:
-// f = F_CPU / (2 * 32 * (OCR2A + 1)), F_CPU = 16 МГц.
-// 0..6 — штатные; 7..70 — дополнительные частоты для вариантов сигнала.
-static const uint8_t  buzzerOcr[BUZZER_NOTE_COUNT] PROGMEM = {
-  124, 103, 92, 82, 70, 62, 55,   // 2000..4500 Гц
-  155, 166, 207, 249,             // 1600, 1500, 1200, 1000 Гц
-  99, 95, 77,                     // 2500, 2600, 3200 Гц
-  45, 41, 191,                    // 5400, 6000, 1300 Гц
-  67, 49, 35, 237,                // 3700, 5000, 7000, 1050 Гц
-  221, 212, 195, 181,             // 1125, 1175, 1275, 1375 Гц
-  158, 132,                       // 1575, 1875 Гц
-  121, 110,                       // 2050, 2250 Гц
-  90, 76, 32,                     // 2750, 3250, 7500 Гц
-  30, 28, 27, 24,                 // 8000, 8500, 9000, 10000 Гц
-  138, 113, 118, 88, 65, 59,      // 1800, 2200, 2100, 2800, 3800, 4200 Гц
-  51, 178, 226, 108, 85, 80,      // 4800, 1400, 1100, 2300, 2900, 3100 Гц
-  75, 73, 68, 63, 60, 57,         // 3300, 3400, 3600, 3900, 4100, 4300 Гц
-  56, 53, 52, 50, 47, 44,         // 4400, 4600, 4700, 4900, 5200, 5600 Гц
-  42, 39, 37,                     // 5800, 6200, 6500 Гц
-  131, 146, 199, 216,             // 1900, 1700, 1250, 1150 Гц
-  168, 140, 105, 81               // 1475, 1775, 2350, 3050 Гц
+// ---------------------------------------------------------------------------
+// Звуковой движок (v2.22).
+//  * Ноты задаются номерами MIDI (C4 = 60, A4 = 440 Гц), строй равномерно
+//    темперированный. Период считается в тактах CPU из таблицы одной октавы,
+//    поэтому ошибка высоты не больше ~7 центов (раньше — до 50).
+//  * Пьезо питается меандром с Timer2 (CTC). Предделитель подбирается под ноту,
+//    а длительности «верхней» и «нижней» фазы можно менять: скважность меньше
+//    50% снижает амплитуду основного тона. Так получается спад громкости,
+//    как у колокольчика или струны (5 ступеней, см. buzzerDuty).
+// ---------------------------------------------------------------------------
+// Период ноты C4..B4 в тактах CPU (F_CPU / частота); для верхних октав сдвиг вправо.
+static const uint16_t buzzerPeriod[12] PROGMEM = {
+  61156, 57724, 54484, 51426, 48540, 45815, 43244, 40817, 38526, 36364, 34323, 32396
 };
+static const uint8_t buzzerPsShift[5] PROGMEM = {3, 5, 6, 7, 8};   // предделители 8, 32, 64, 128, 256
+static const uint8_t buzzerPsBits[5] PROGMEM = {2, 3, 4, 5, 6};    // биты CS22:0 Timer2
+static const uint8_t buzzerDuty[5] PROGMEM = {8, 5, 3, 2, 1};      // «верхняя» фаза в 1/16 периода; амплитуда 1, .83, .56, .38, .20
+
+volatile uint8_t bzOcrHi = 100, bzOcrLo = 100;   // OCR2A для верхней и нижней фазы
+volatile boolean bzPhase = false;
+boolean bzRunning = false;
 
 #if (BUZZER_ACTIVE == 0)
 ISR(TIMER2_COMPA_vect) {
-#if (BUZZER_BRIDGE == 1)
-  static bool phase;
-  phase = !phase;
-  if (phase) {
+  bzPhase = !bzPhase;
+  if (bzPhase) {
     BUZZER_PORT |= _BV(BUZZER_BIT);
+#if (BUZZER_BRIDGE == 1)
     BUZZER_BRIDGE_PORT &= ~_BV(BUZZER_BRIDGE_BIT);
+#endif
+    OCR2A = bzOcrHi;
   } else {
     BUZZER_PORT &= ~_BV(BUZZER_BIT);
+#if (BUZZER_BRIDGE == 1)
     BUZZER_BRIDGE_PORT |= _BV(BUZZER_BRIDGE_BIT);
-  }
-#else
-  BUZZER_PORT ^= _BV(BUZZER_BIT);
 #endif
+    OCR2A = bzOcrLo;
+  }
 }
 #endif
 
-void buzzerOn() {
+// Включить ноту note (MIDI 60..119) с уровнем громкости level (0 = максимум .. 4).
+// Если звук уже идёт (legato или смена уровня), поток не прерывается.
+void buzzerTone(byte note, byte level) {
 #if (BUZZER_ACTIVE == 1)
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, HIGH);
@@ -62,20 +64,45 @@ void buzzerOn() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 #else
-  byte idx = buzzerPlayIdx;
-  if (idx >= BUZZER_NOTE_COUNT) idx = BUZZER_FREQ_IDX;
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  if (note < 60) note = 60;
+  if (note > 119) note = 119;
+  byte s = note / 12 - 5;                                       // число октав выше четвёртой
+  uint16_t cycles = pgm_read_word(&buzzerPeriod[note % 12]);
+  while (s--) cycles = (cycles + 1) >> 1;                      // каждая октава вверх — вдвое короче период
+  byte i = 0;                                                   // минимальный предделитель, при котором период <= 273 тиков
+  while (i < 4 && (cycles >> pgm_read_byte(&buzzerPsShift[i])) > 273) i++;
+  byte sh = pgm_read_byte(&buzzerPsShift[i]);
+  uint16_t ticks = (cycles + (1 << (sh - 1))) >> sh;
+  if (level > 4) level = 4;
+  uint16_t hi = (ticks * pgm_read_byte(&buzzerDuty[level]) + 8) >> 4;
+  uint8_t sreg = SREG;
+  cli();
+  bzOcrHi = hi - 1;
+  bzOcrLo = ticks - hi - 1;
+  if (!bzRunning) {
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
 #if (BUZZER_BRIDGE == 1)
-  pinMode(BUZZER_BRIDGE_PIN, OUTPUT);
-  digitalWrite(BUZZER_BRIDGE_PIN, HIGH);   // старт в противофазе
+    pinMode(BUZZER_BRIDGE_PIN, OUTPUT);
+    digitalWrite(BUZZER_BRIDGE_PIN, HIGH);   // старт в противофазе
 #endif
-  TCCR2A = _BV(WGM21);                 // CTC
-  TCCR2B = _BV(CS21) | _BV(CS20);      // /32
-  OCR2A = pgm_read_byte(&buzzerOcr[idx]);
-  TCNT2 = 0;
-  TIMSK2 |= _BV(OCIE2A);
+    bzPhase = false;
+    TCCR2A = _BV(WGM21);                     // CTC
+    OCR2A = bzOcrLo;
+    TCNT2 = 0;
+    TCCR2B = pgm_read_byte(&buzzerPsBits[i]);
+    TIMSK2 |= _BV(OCIE2A);
+    bzRunning = true;
+  } else {
+    byte cs = pgm_read_byte(&buzzerPsBits[i]);
+    if (TCCR2B != cs) { TCCR2B = cs; TCNT2 = 0; }
+  }
+  SREG = sreg;
 #endif
+}
+
+void buzzerOn() {
+  buzzerTone(buzzerPlayIdx, 0);
 }
 
 void buzzerOff() {
@@ -93,6 +120,7 @@ void buzzerOff() {
   // низкий уровень у active-low модуля = постоянный звук.
   TIMSK2 &= ~_BV(OCIE2A);
   TCCR2B = 0;
+  bzRunning = false;
   digitalWrite(BUZZER_PIN, LOW);
   pinMode(BUZZER_PIN, INPUT);
 #if (BUZZER_BRIDGE == 1)
@@ -524,48 +552,58 @@ void stopAlarm() {
   buzzerOff();
 }
 
+
 // ---- варианты почасового сигнала ----
 // Таблица используется и для превью в меню, и для сигнала в начале часа.
-#define CT_GAP 0xFF
-#define CT_END 0xFE
+// Шаг: {нота, длительность в 10 мс}. Нота — номер MIDI (nC4 = 60 ... nB8 = 119),
+// флаг CT_LEGATO — без паузы после ноты (связно), либо служебный код:
+//   CT_END   — конец мелодии
+//   CT_REST  — пауза
+//   CT_VOICE — «тембр» следующих нот: длительность = шаг спада громкости в 10 мс
+//              (0 — ровный звук без спада)
+// Между нотами без CT_LEGATO автоматически делается короткая пауза (1/8 ноты,
+// не больше 25 мс), поэтому повторяющиеся ноты звучат раздельно.
+#define CT_END 0
+#define CT_REST 1
+#define CT_VOICE 2
+#define CT_LEGATO 0x80
 
 #if (RESET_CLOCK == 0)
+enum : uint8_t {
+  nC4 = 60, nCs4, nD4, nDs4, nE4, nF4, nFs4, nG4, nGs4, nA4, nAs4, nB4,
+  nC5, nCs5, nD5, nDs5, nE5, nF5, nFs5, nG5, nGs5, nA5, nAs5, nB5,
+  nC6, nCs6, nD6, nDs6, nE6, nF6, nFs6, nG6, nGs6, nA6, nAs6, nB6,
+  nC7, nCs7, nD7, nDs7, nE7, nF7, nFs7, nG7, nGs7, nA7, nAs7, nB7,
+  nC8, nCs8, nD8, nDs8, nE8, nF8, nFs8, nG8, nGs8, nA8, nAs8, nB8
+};
+
 struct ChimeStep {
-  uint8_t note;    // индекс частоты или CT_GAP / CT_END
+  uint8_t note;
   uint8_t dur10;   // длительность в 10 мс
 };
 
-// Индексы частот: 0=2000, 1=2400, 2=2700, 3=3000, 4=3500, 5=4000, 6=4500,
-// 7=1600, 8=1500, 9=1200, 10=1000, 11=2500, 12=2600, 13=3200, 14=5400,
-// 15=6000, 16=1300, 17=3700, 18=5000, 19=7000, 20=1050, 21=1125, 22=1175,
-// 23=1275, 24=1375, 25=1575, 26=1875, 27=2050, 28=2250, 29=2750, 30=3250,
-// 31=7500, 32=8000, 33=8500, 34=9000, 35=10000, 36=1800, 37=2200, 38=2100,
-// 39=2800, 40=3800, 41=4200, 42=4800, 43=1400, 44=1100, 45=2300, 46=2900,
-// 47=3100, 48=3300, 49=3400, 50=3600, 51=3900, 52=4100, 53=4300, 54=4400,
-// 55=4600, 56=4700, 57=4900, 58=5200, 59=5600, 60=5800, 61=6200, 62=6500,
-// 63=1900, 64=1700, 65=1250, 66=1150, 67=1475, 68=1775, 69=2350, 70=3050 Гц.
 static const ChimeStep chimePatterns[] PROGMEM = {
-  {33, 2}, {35, 2}, {62, 2}, {15, 5},  {CT_GAP, 3}, {54, 4}, {57, 3}, {18, 8}, {CT_GAP, 4}, {47, 4}, {0, 12}, {CT_END, 0}, // 0 high ping
-  {1, 6},  {63, 3}, {36, 3}, {64, 3}, {CT_GAP, 2}, {7, 9}, {CT_GAP, 4}, {0, 10}, {CT_GAP, 4}, {10, 20}, {CT_END, 0}, // 1 low doorbell
-  {3, 16}, {3, 16}, {49, 32}, {3, 32}, {5, 32}, {40, 64}, {CT_GAP, 4}, {3, 16}, {3, 16}, {49, 32}, {3, 32}, {6, 32}, {5, 64}, {CT_GAP, 4}, {3, 16}, {3, 16}, {15, 32}, {18, 32}, {5, 32}, {40, 32}, {49, 64}, {CT_GAP, 4}, {14, 16}, {14, 16}, {18, 32}, {5, 32}, {6, 32}, {5, 64}, {CT_END, 0}, // 2 Happy Birthday
-  {64, 25}, {64, 25}, {64, 50}, {64, 25}, {64, 25}, {64, 50}, {64, 25}, {0, 25}, {2, 25}, {3, 25}, {49, 100}, {CT_GAP, 25}, {50, 25}, {50, 25}, {50, 25}, {50, 25}, {50, 25}, {49, 25}, {49, 25}, {49, 25}, {49, 25}, {3, 25}, {3, 25}, {49, 25}, {3, 50}, {0, 50}, {CT_END, 0}, // 3 Jingle Bells
-  {10,20},{20,20},{10,20},{20,20},{10,20},{20,20},{CT_GAP,5},{9,20},{64,20},{CT_GAP,5},{16,20},{36,20},{CT_GAP,5},{8,20},{63,20},{CT_GAP,5},{38,90},{16,20},{38,20},{16,20},{38,20},{16,20},{38,20},{16,20},{38,30},{CT_GAP,5},{37,12},{8,12},{1,12},{10,12},{37,9},{8,9},{1,9},{10,9},{17,7},{38,7},{17,7},{38,7},{37,5},{8,5},{1,5},{10,5},{17,4},{38,4},{17,4},{38,4},{37,3},{8,3},{1,3},{10,3},{17,2},{38,2},{17,2},{38,2},{CT_GAP,5},{10,25},{CT_END,0}, // 4 old modem sound
-  {10, 5}, {20, 6}, {21, 7},  {66, 6},  {22, 8},  {23, 9},  {43, 6}, {9, 22}, {CT_END, 0}, // 5 low gong
-  {8, 3},  {25, 3}, {26, 3},  {27, 3},  {28, 3},  {69, 3},  {29, 10}, {46, 6}, {30, 10}, {CT_END, 0}, // 6 rising run
-  {19, 3}, {15, 3}, {14, 3},  {18, 3},  {6, 3},   {4, 3},   {50, 3},  {48, 3}, {3, 16}, {CT_END, 0}, // 7 falling run
-  {10, 6}, {0, 3},  {15, 4},  {70, 4},  {10, 6},  {49, 4},  {34, 4},  {34, 14}, {CT_END, 0}, // 8 wide leap
-  {32, 2}, {1, 6},  {CT_GAP, 3}, {68, 3}, {7, 8}, {CT_GAP, 3}, {37, 3}, {0, 8}, {CT_GAP, 3}, {1, 18}, {CT_END, 0}, // 9 ding-dong-ding
-  {32, 2}, {55, 2}, {5, 2},  {CT_GAP, 2}, {5, 2}, {CT_GAP, 7}, {4, 2}, {CT_GAP, 2}, {4, 2}, {CT_GAP, 7}, {3, 14}, {CT_GAP, 3}, {9, 8}, {CT_END, 0}, // 10 double strike
-  {62, 14}, {CT_GAP, 2}, {60, 14}, {CT_GAP, 2}, {17, 30}, {CT_GAP, 3}, {52, 30}, {CT_GAP, 3}, {59, 14}, {CT_GAP, 2}, {57, 14}, {CT_GAP, 2}, {46, 30}, {CT_GAP, 3}, {48, 30}, {CT_GAP, 3}, {57, 14}, {CT_GAP, 2}, {54, 14}, {CT_GAP, 2}, {39, 30}, {CT_GAP, 3}, {48, 30}, {CT_GAP, 3}, {54, 60}, {CT_GAP, 6}, {CT_END, 0}, // 11 Grande Valse (Nokia)
-  {20, 13}, {20, 80}, {0, 10}, {25, 10}, {68, 10}, {25, 10}, {16, 10}, {20, 10}, {25, 10}, {20, 10}, {43, 10}, {20, 10}, {16, 10}, {20, 10}, {22, 10}, {20, 20}, {CT_END, 0}, // 12 Jumping (Nokia)
-  {64, 30}, {CT_GAP, 3}, {67, 30}, {CT_GAP, 3}, {16, 30}, {CT_GAP, 3}, {10, 60}, {CT_END, 0}, // 13 Westminster short
-  {64, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {16, 30}, {CT_GAP, 2}, {10, 45}, {CT_GAP, 10}, {16, 30}, {CT_GAP, 2}, {64, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {10, 45}, {CT_GAP, 10}, {16, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {64, 30}, {CT_GAP, 2}, {16, 45}, {CT_GAP, 10}, {64, 30}, {CT_GAP, 2}, {16, 30}, {CT_GAP, 2}, {67, 30}, {CT_GAP, 2}, {10, 60}, {CT_END, 0}, // 14 Westminster full (Big Ben)
-  {9, 18}, {10, 35}, {CT_GAP, 25}, {9, 18}, {10, 35}, {CT_GAP, 45}, {9, 18}, {10, 35}, {CT_GAP, 45}, {9, 18}, {10, 55}, {CT_END, 0}, // 15 Cuckoo
-  {25, 15}, {25, 15}, {25, 15}, {65, 80}, {CT_GAP, 20}, {43, 15}, {43, 15}, {43, 15}, {22, 100}, {CT_GAP, 20}, {25, 15}, {25, 15}, {25, 15}, {65, 80}, {CT_GAP, 20}, {43, 15}, {43, 15}, {43, 15}, {22, 140}, {CT_END, 0}, // 16 Beethoven 5th opening
-  {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 10}, {CT_GAP, 90}, {10, 50}, {CT_END, 0}, // 17 Time signal (six pips)
-  {38, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {38, 20}, {CT_GAP, 2}, {0, 20}, {CT_GAP, 2}, {48, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {47, 20}, {CT_GAP, 2}, {47, 20}, {CT_GAP, 2}, {47, 40}, {CT_GAP, 8}, {46, 20}, {CT_GAP, 2}, {46, 20}, {CT_GAP, 2}, {46, 40}, {CT_GAP, 8}, {39, 20}, {CT_GAP, 2}, {39, 20}, {CT_GAP, 2}, {39, 40}, {CT_GAP, 8}, {12, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {39, 20}, {CT_GAP, 2}, {68, 20}, {CT_GAP, 2}, {12, 45}, {CT_END, 0}, // 18 Sugar Plum Fairy
-  {68, 20}, {46, 20}, {12, 20}, {69, 20}, {12, 20}, {46, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {12, 20}, {69, 20}, {12, 20}, {46, 20}, {12, 20}, {46, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {68, 20}, {0, 20}, {46, 20}, {0, 30}, {CT_GAP, 6}, {68, 20}, {46, 20}, {12, 20}, {69, 40}, {CT_END, 0}, // 19 Morning Mood
-  {38, 15}, {CT_GAP, 2}, {0, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 4}, {38, 15}, {CT_GAP, 2}, {0, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 4}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 4}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 4}, {68, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 2}, {68, 15}, {CT_GAP, 2}, {47, 15}, {CT_GAP, 2}, {39, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 4}, {69, 15}, {CT_GAP, 2}, {38, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {12, 15}, {CT_GAP, 2}, {69, 15}, {CT_GAP, 2}, {68, 30}, {CT_END, 0}, // 20 Carol of the Bells
+  {CT_VOICE, 5}, {nC8, 50}, {CT_END, 0}, // 0 high ping
+  {CT_VOICE, 8}, {nA7, 30}, {nF7, 60}, {CT_END, 0}, // 1 low doorbell
+  {CT_VOICE, 6}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nG7, 32}, {nFs7, 64}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nA7, 32}, {nG7, 64}, {nD7, 24}, {nD7, 8}, {nD8, 32}, {nB7, 32}, {nG7, 32}, {nFs7, 32}, {nE7, 64}, {nC8, 24}, {nC8, 8}, {nB7, 32}, {nG7, 32}, {nA7, 32}, {nG7, 80}, {CT_END, 0}, // 2 Happy Birthday
+  {CT_VOICE, 4}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nCs7, 25}, {nFs7, 38}, {nGs7, 12}, {nAs7, 100}, {nB7, 25}, {nB7, 25}, {nB7, 38}, {nB7, 12}, {nB7, 25}, {nAs7, 25}, {nAs7, 25}, {nAs7, 12}, {nAs7, 12}, {nAs7, 25}, {nGs7, 25}, {nGs7, 25}, {nAs7, 25}, {nGs7, 50}, {nCs7, 50}, {CT_END, 0}, // 3 Jingle Bells
+  {CT_VOICE, 0}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {CT_REST, 5}, {nD6|CT_LEGATO, 20}, {nGs6|CT_LEGATO, 20}, {CT_REST, 5}, {nE6|CT_LEGATO, 20}, {nA6|CT_LEGATO, 20}, {CT_REST, 5}, {nFs6|CT_LEGATO, 20}, {nAs6|CT_LEGATO, 20}, {CT_REST, 5}, {nC7|CT_LEGATO, 90}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 30}, {CT_REST, 5}, {nCs7|CT_LEGATO, 12}, {nFs6|CT_LEGATO, 12}, {nD7|CT_LEGATO, 12}, {nB5|CT_LEGATO, 12}, {nCs7|CT_LEGATO, 9}, {nFs6|CT_LEGATO, 9}, {nD7|CT_LEGATO, 9}, {nB5|CT_LEGATO, 9}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nCs7|CT_LEGATO, 5}, {nFs6|CT_LEGATO, 5}, {nD7|CT_LEGATO, 5}, {nB5|CT_LEGATO, 5}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nCs7|CT_LEGATO, 3}, {nFs6|CT_LEGATO, 3}, {nD7|CT_LEGATO, 3}, {nB5|CT_LEGATO, 3}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {CT_REST, 5}, {nB5|CT_LEGATO, 25}, {CT_END, 0}, // 4 old modem sound
+  {CT_VOICE, 12}, {nD7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {nA6|CT_LEGATO, 2}, {nG6, 90}, {CT_END, 0}, // 5 low gong
+  {CT_VOICE, 4}, {nG6, 4}, {nB6, 4}, {nD7, 4}, {nG7, 4}, {nB7, 4}, {nD8, 38}, {CT_END, 0}, // 6 rising run
+  {CT_VOICE, 4}, {nD8, 4}, {nB7, 4}, {nA7, 4}, {nG7, 4}, {nE7, 4}, {nD7, 38}, {CT_END, 0}, // 7 falling run
+  {CT_VOICE, 4}, {nC7, 6}, {nC8, 6}, {nG6, 6}, {nG7, 6}, {nE7, 38}, {CT_END, 0}, // 8 wide leap
+  {CT_VOICE, 8}, {nG7, 15}, {nE7, 15}, {nG7, 42}, {CT_END, 0}, // 9 ding-dong-ding
+  {CT_VOICE, 6}, {nG7, 6}, {nG7, 6}, {nC7, 46}, {CT_END, 0}, // 10 double strike
+  {CT_VOICE, 0}, {nD8, 15}, {nC8, 15}, {nE7, 30}, {nFs7, 30}, {nB7, 15}, {nA7, 15}, {nC7, 30}, {nD7, 30}, {nA7, 15}, {nG7, 15}, {nB6, 30}, {nD7, 30}, {nG7, 90}, {CT_END, 0}, // 11 Grande Valse (Nokia)
+  {CT_VOICE, 0}, {nC7, 13}, {nC7, 80}, {nB7, 10}, {nG7, 10}, {nA7, 10}, {nG7, 10}, {nE7, 10}, {nC7, 10}, {nG7, 10}, {nC7, 10}, {nF7, 10}, {nC7, 10}, {nE7, 10}, {nC7, 10}, {nD7, 10}, {nC7, 20}, {CT_END, 0}, // 12 Jumping (Nokia)
+  {CT_VOICE, 10}, {nGs7, 33}, {nFs7, 33}, {nE7, 33}, {nB6, 70}, {CT_END, 0}, // 13 Westminster short
+  {CT_VOICE, 10}, {nE7, 33}, {nGs7, 33}, {nFs7, 33}, {nB6, 56}, {nE7, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 56}, {nGs7, 33}, {nE7, 33}, {nFs7, 33}, {nB6, 56}, {nB6, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 100}, {CT_END, 0}, // 14 Westminster full (Big Ben)
+  {CT_VOICE, 0}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 56}, {CT_END, 0}, // 15 Cuckoo
+  {CT_VOICE, 12}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 103}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 190}, {CT_END, 0}, // 16 Beethoven 5th opening
+  {CT_VOICE, 0}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 50}, {CT_END, 0}, // 17 Time signal (six pips)
+  {CT_VOICE, 4}, {nE7, 22}, {nCs7, 22}, {nE7, 22}, {nDs7, 22}, {nC8, 22}, {nCs7, 22}, {nB7, 22}, {nB7, 22}, {nB7, 48}, {nAs7, 22}, {nAs7, 22}, {nAs7, 48}, {nA7, 22}, {nA7, 22}, {nA7, 48}, {nGs7, 22}, {nCs7, 22}, {nA7, 22}, {nCs7, 22}, {nGs7, 45}, {CT_END, 0}, // 18 Sugar Plum Fairy
+  {CT_VOICE, 0}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nA7|CT_LEGATO, 20}, {nB7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nB7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7, 50}, {CT_END, 0}, // 19 Morning Mood
+  {CT_VOICE, 4}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nC7, 17}, {nC7, 17}, {nC7, 17}, {nAs7, 17}, {nGs7, 17}, {nG7, 17}, {nG7, 17}, {nG7, 19}, {nF7, 17}, {nDs7, 17}, {nF7, 17}, {nF7, 17}, {nF7, 17}, {nG7, 17}, {nF7, 17}, {nC7, 30}, {CT_END, 0}, // 20 Carol of the Bells
 };
 
 uint16_t chimeModeStart(byte target) {
@@ -598,24 +636,83 @@ void startupLEDtick() {
   if (++ci >= sizeof(ledColors)) ci = 0;
 }
 
+// ---- секвенсор ----
+// Время шагов считается по «идеальной» шкале (seqT0 += длительность), а не от
+// момента, когда до шага дошёл loop(): задержки основного цикла не накапливаются
+// и не сбивают темп.
+static uint8_t seqVoice;          // шаг спада громкости, 10 мс (0 - без спада)
+static uint8_t seqNote;           // текущая нота
+static uint8_t seqLevel;          // текущая ступень громкости 0..4
+static boolean seqSound;          // нота ещё звучит
+static uint16_t seqDur;           // длительность текущего шага, мс
+static uint16_t seqGate;          // через сколько мс после начала шага звук выключается
+static unsigned long seqT0;       // начало текущего шага
+
+void seqStart(byte target, unsigned long ms) {
+  chimePos = chimeModeStart(target);
+  seqVoice = 0;
+  seqSound = false;
+  seqDur = 0;
+  seqT0 = ms;
+}
+
+boolean seqLoad() {                // загрузить следующий звучащий шаг или паузу; false - конец
+  for (;;) {
+    uint8_t note = pgm_read_byte(&chimePatterns[chimePos].note);
+    uint8_t dur10 = pgm_read_byte(&chimePatterns[chimePos].dur10);
+    chimePos++;
+    if (note == CT_END) return false;
+    if (note == CT_VOICE) { seqVoice = dur10; continue; }
+    seqDur = (uint16_t)dur10 * 10;
+    if (note == CT_REST) {
+      if (seqSound) buzzerOff();
+      seqSound = false;
+      return true;
+    }
+    seqNote = note & 0x7F;
+    uint16_t gap = 0;
+    if (!(note & CT_LEGATO)) {
+      gap = seqDur >> 3;
+      if (gap > 25) gap = 25;
+    }
+    seqGate = seqDur - gap;
+    seqLevel = 0;
+    seqSound = true;
+    buzzerTone(seqNote, 0);
+    if (startupLED) startupLEDtick();
+    else setLEDcolor(randomLEDcolor());   // случайный цвет на каждую ноту
+    return true;
+  }
+}
+
+boolean seqTick(unsigned long ms) {   // вызывать как можно чаще; false - мелодия закончилась
+  uint16_t el = (uint16_t)(ms - seqT0);
+  if (el >= seqDur) {
+    seqT0 += seqDur;
+    if (!seqLoad()) return false;
+    el = (uint16_t)(ms - seqT0);
+  }
+  if (seqSound) {
+    if (el >= seqGate) {
+      buzzerOff();
+      seqSound = false;
+    } else if (seqVoice) {
+      uint16_t lv = el / ((uint16_t)seqVoice * 10);
+      if (lv > 4) lv = 4;
+      if (lv != seqLevel) {
+        seqLevel = lv;
+        buzzerTone(seqNote, seqLevel);
+      }
+    }
+  }
+  return true;
+}
+
 void playChimeSound(byte target) {
   stopAlarm();
   if (!startupLED) setLED();
-  uint16_t pos = chimeModeStart(target);
-  for (;;) {
-    uint8_t note = pgm_read_byte(&chimePatterns[pos].note);
-    uint8_t dur10 = pgm_read_byte(&chimePatterns[pos].dur10);
-    pos++;
-    if (note == CT_END) break;
-    if (note == CT_GAP) buzzerOff();
-    else {
-      buzzerPlayIdx = note;
-      buzzerOn();
-      if (!startupLED) setLEDcolor(randomLEDcolor());   // случайный цвет на каждую ноту
-    }
-    delay((uint16_t)dur10 * 10);
-    startupLEDtick();
-  }
+  seqStart(target, millis());
+  while (seqTick(millis())) { }
   buzzerOff();
   if (!startupLED) setLED();
 }
@@ -672,13 +769,10 @@ void checkChime() {
   byte snd = (byte)chimeSound;
   if (snd == CHIME_RANDOM) snd = randomChime();
   else if (snd >= CHIME_MODE_COUNT) snd = 0;
-  chimePos = chimeModeStart(snd);
+  seqStart(snd, millis());
   chimeActive = true;
   co2WarnBeepActive = false;
   setLED();                         // обновить яркость и взять текущий цвет
-  chimeStep = 0;
-  chimeStepMs = 0;
-  chimeStart = millis();
 }
 #else
 void checkChime() {}
@@ -698,9 +792,7 @@ void tickBuzzer() {
         buzzerPlayIdx = BUZZER_FREQ_IDX;
         buzzerOn();
       } else if (phase == 2) {
-        byte f2 = BUZZER_FREQ_IDX + 3;
-        if (f2 > 6) f2 -= 7;
-        buzzerPlayIdx = f2;                        // вторая частота
+        buzzerPlayIdx = BUZZER_FREQ_IDX - 9;       // вторая нота (D7): большая секста вниз
         buzzerOn();
       } else {
         buzzerOff();
@@ -709,28 +801,10 @@ void tickBuzzer() {
   }
 #if (RESET_CLOCK == 0)
   else if (chimeActive) {
-    if (chimeStep == 0) {
-      uint8_t note = pgm_read_byte(&chimePatterns[chimePos].note);
-      uint8_t dur10 = pgm_read_byte(&chimePatterns[chimePos].dur10);
-      chimePos++;
-      if (note == CT_END) {
-        buzzerOff();
-        chimeActive = false;
-        setLED();                   // вернуть цвет по датчику
-        return;
-      }
-      if (note == CT_GAP) {
-        buzzerOff();
-      } else {
-        buzzerPlayIdx = note;
-        buzzerOn();
-        setLEDcolor(randomLEDcolor());   // случайный цвет на каждую ноту
-      }
-      chimeStepMs = (uint16_t)dur10 * 10;
-      chimeStart = ms;
-      chimeStep = 1;
-    } else if (ms - chimeStart >= chimeStepMs) {
-      chimeStep = 0;
+    if (!seqTick(ms)) {
+      buzzerOff();
+      chimeActive = false;
+      setLED();                     // вернуть цвет по датчику
     }
   }
 #endif
@@ -741,9 +815,21 @@ void tickBuzzer() {
     }
   }
   else if (co2WarnBeepActive) {
-    if (ms - co2WarnBeepStart >= CO2_WARN_BEEP_MS) {
-      buzzerOff();
-      co2WarnBeepActive = false;
+    // Серия из CO2_WARN_BEEPS писков с паузами CO2_WARN_GAP_MS.
+    uint16_t dur = (co2WarnPhase & 1) ? CO2_WARN_GAP_MS : CO2_WARN_BEEP_MS;
+    if (ms - co2WarnBeepStart >= dur) {
+      if (co2WarnPhase >= (CO2_WARN_BEEPS - 1) * 2) {
+        buzzerOff();
+        co2WarnBeepActive = false;
+      } else {
+        co2WarnPhase++;
+        co2WarnBeepStart = ms;
+        if (co2WarnPhase & 1) buzzerOff();
+        else {
+          buzzerPlayIdx = BUZZER_FREQ_IDX;
+          buzzerOn();
+        }
+      }
     }
   }
 }
@@ -757,6 +843,7 @@ void checkCO2Warning() {
   unsigned long ms = millis();
   if (co2WarnTimer == 0 || (unsigned long)(ms - co2WarnTimer) >= CO2_WARN_PERIOD_MS) {
     co2WarnTimer = ms;
+    co2WarnPhase = 0;
     co2WarnBeepActive = true;
     co2WarnBeepStart = ms;
     buzzerPlayIdx = BUZZER_FREQ_IDX;
@@ -1286,16 +1373,20 @@ void drawSensors() {
       if (timeValid) drawClock(hrs, mins, 0, 0);
       else drawTimeNotSet();
     } else {
-      lcd.setCursor(15, 3);
-      if (timeValid) printTime(hrs * 60 + mins);
-      else lcd.print(F("-:--"));
+      if (mode0scr == 1) {
+        lcd.setCursor(16, 3);                // ppm в колонке подписей T/H/P
+        lcd.print(F("ppm"));
 #if (CO2_SENSOR == 1)
-      if (mode0scr == 1) drawPPM(dispCO2, 0, 0);
-      else
+        drawPPM(dispCO2, 0, 0);
 #endif
-      if (mode0scr == 2) drawTemp(dispTemp, 0, 0);
-      else if (mode0scr == 3) drawPres(dispPres, 0, 0);
-      else if (mode0scr == 4) drawHum(dispHum, 0, 0);
+      } else {
+        lcd.setCursor(15, 3);
+        if (timeValid) printTime(hrs * 60 + mins);
+        else lcd.print(F("-:--"));
+        if (mode0scr == 2) drawTemp(dispTemp, 0, 0);
+        else if (mode0scr == 3) drawPres(dispPres, 0, 0);
+        else if (mode0scr == 4) drawHum(dispHum, 0, 0);
+      }
     }
     return;
   }
@@ -1388,7 +1479,7 @@ void drawSensors() {
 #endif
         break;
       case 2:
-        drawTemp(dispTemp, 2, 0);
+        drawTemp(dispTemp, 1, 0);   // °C занимает колонки 14-15
         break;
       case 3:
         drawPres(dispPres, 2, 0);
@@ -1434,17 +1525,28 @@ void clockTick() {
     if (dotFlag) code = 165;
     else code = 32;
     if (mode0scr == 0 && ((bigDig && DISPLAY_TYPE == 0) || DISPLAY_TYPE == 1)) {          // мигание большими точками только в нулевом режиме главного экрана (с)НР
-      if (bigDig && DISPLAY_TYPE == 1) lcd.setCursor(7, 2);
-      else lcd.setCursor(7, 0);
-      lcd.write(code);
-      lcd.setCursor(7, 1);
-      lcd.write(code);
+      if (bigDig && DISPLAY_TYPE == 1) {
+        // Крупное двоеточие: верхняя точка в верхней половине, нижняя — в нижней.
+        lcd.setCursor(7, 1);
+        lcd.write(dotFlag ? 5 : 32);
+        lcd.setCursor(7, 2);
+        lcd.write(dotFlag ? 4 : 32);
+      } else {
+        lcd.setCursor(7, 0);
+        lcd.write(code);
+        lcd.setCursor(7, 1);
+        lcd.write(code);
+      }
     }
     else {
+      // На крупном экране CO2 времени нет (там ppm), поэтому его двоеточие
+      // не должно мигать поверх единицы измерения.
 #if (DISPLAY_TYPE == 1)
-      if (code == 165) code = 58;
-      lcd.setCursor(17, 3);
-      lcd.write(code);
+      if (!(bigDig && mode0scr == 1)) {
+        if (code == 165) code = 58;
+        lcd.setCursor(17, 3);
+        lcd.write(code);
+      }
 #endif
     }
   }
@@ -1464,6 +1566,8 @@ void clockTick() {
 #if (DISPLAY_TYPE == 0)
     if (!(mode0scr == 0 && bigDig)) dotsVisible = false;   // на 1602 точки только в крупных часах
 #endif
+    // На 2004 индикатор мигает с секундами и на крупном CO2; двоеточие
+    // на этом экране не перерисовывается, чтобы не портить «ppm».
     if (dotsVisible && !dotFlag) setLEDcolor(0);
   }
 }
