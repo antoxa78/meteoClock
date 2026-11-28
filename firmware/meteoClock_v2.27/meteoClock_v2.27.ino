@@ -27,7 +27,18 @@
   - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
 */
 
-/* Версия 2.26 (длиннее Hatikvah и Подмосковные вечера)
+/* Версия 2.27 (короткие Hatikvah и Подмосковные вечера)
+  - Hatikvah (21) укорочена до ~11,7 с: оставлена первая фраза вступления
+  - Подмосковные вечера (22) укорочены до ~12,8 с: оставлена начальная
+    7-тактная фраза
+  - Восстановлены служебные строки, сокращённые в v2.26: экран запуска,
+    экран RTC, "Settings saved", подсказка ON/OFF
+  - Количество сигналов (23), Random (23) и EEPROM (11) не изменились
+  - Flash 30 608 байт (99%), RAM 917 (для 2004), свободно 112 байт
+    Для 1602 — 28 464 байта, RAM 885
+    RESET_CLOCK 1 — 29 042 байта, RAM 891
+
+  Версия 2.26 (длиннее Hatikvah и Подмосковные вечера)
   - Hatikvah (21) удлинена с ~17,9 до ~30,2 с: добавлена вторая фраза
     вступления (22 ноты) перед припевом
   - Подмосковные вечера (22) удлинены с ~12,8 до ~26,7 с: после начальной
@@ -959,9 +970,9 @@ void setup() {
   lcd.clear();
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 1); lcd.print(F("v2.26"));
+  lcd.setCursor(2, 1); lcd.print(F("MeteoClock 2.27"));
 #else
-  lcd.setCursor(0, 0); lcd.print(F("v2.26"));
+  lcd.setCursor(0, 0); lcd.print(F("v2.27"));
 #endif
   setLED();                           // применить сохранённую яркость
 #if (RESET_CLOCK == 0)
@@ -1067,8 +1078,8 @@ void setup() {
   // время, полученное из порта в начале setup(), и часы отставали на 10-30 секунд.
   if (!timeValid) {                   // RTC потерял питание: объясняем, что время надо выставить
     lcd.clear();
-    lcd.setCursor(0, 0); lcd.print(F("RTC lost"));
-    lcd.setCursor(0, 1); lcd.print(F("Set time"));
+    lcd.setCursor(0, 0); lcd.print(F("RTC lost power"));
+    lcd.setCursor(0, 1); lcd.print(F("Set time via USB"));
     delay(2500);
   }
   lcd.clear();

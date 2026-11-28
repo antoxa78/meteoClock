@@ -455,7 +455,7 @@ void drawAlarmFields() {
 void drawAlarmHint() {                 // подсказка зависит от выбранного поля
 #if (DISPLAY_TYPE == 1)
   lcd.setCursor(0, 2);
-  lcd.print(alarmField < 2 ? F("1x +1   hold = fast ") : F("1x ON/OFF"));
+  lcd.print(alarmField < 2 ? F("1x +1   hold = fast ") : F("1x = switch ON/OFF  "));
   lcd.setCursor(0, 3);
   lcd.print(alarmField < 2 ? F("2x = next field ") : F("2x = save & exit"));
 #endif
@@ -634,14 +634,7 @@ static const ChimeStep chimePatterns[] PROGMEM = {
   {nE7|CT_LEGATO, 75}, {nF7|CT_LEGATO, 38}, {nE7|CT_LEGATO, 38}, {nF7|CT_LEGATO, 38}, {nA7|CT_LEGATO, 38},
   {nE7|CT_LEGATO, 150}, {nD7, 75}, {nD7|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7, 75},
   {nC7|CT_LEGATO, 75}, {nB6|CT_LEGATO, 38}, {nA6|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7|CT_LEGATO, 38},
-  {nA6, 113}, {CT_REST, 20},
-  {nE6|CT_LEGATO, 38}, {nA6|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7|CT_LEGATO, 38}, {nD7|CT_LEGATO, 38},
-  {nE7, 75}, {nE7|CT_LEGATO, 75}, {nF7|CT_LEGATO, 38}, {nE7|CT_LEGATO, 38}, {nF7|CT_LEGATO, 38},
-  {nA7|CT_LEGATO, 38}, {nE7|CT_LEGATO, 150}, {nD7, 75}, {nD7|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38},
-  {nC7, 75}, {nC7|CT_LEGATO, 75}, {nB6|CT_LEGATO, 38}, {nA6|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38},
-  {nC7|CT_LEGATO, 38}, {nA6, 113}, {CT_REST, 20},
-  {nA6, 75}, {nA7, 75}, {nA7, 75}, {nA7|CT_LEGATO, 75}, {nG7|CT_LEGATO, 38},
-  {nA7|CT_LEGATO, 38}, {nG7|CT_LEGATO, 38}, {nF7|CT_LEGATO, 38}, {nE7, 150}, {CT_END, 0}, // 21 Hatikvah (verse repeat + refrain)
+  {nA6, 113}, {CT_END, 0}, // 21 Hatikvah (opening phrase)
   {CT_VOICE, 24},
   {nB6|CT_LEGATO, 46}, {nD7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 46}, {nD7|CT_LEGATO, 46},
   {nE7|CT_LEGATO, 91}, {nD7|CT_LEGATO, 46}, {nCs7|CT_LEGATO, 46},
@@ -649,12 +642,7 @@ static const ChimeStep chimePatterns[] PROGMEM = {
   {nB6|CT_LEGATO, 182},
   {nD7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 46}, {nA7, 46}, {nA7|CT_LEGATO, 46},
   {nB7|CT_LEGATO, 91}, {nA7|CT_LEGATO, 46}, {nG7|CT_LEGATO, 46},
-  {nFs7, 182}, {CT_REST, 20},
-  {nG7|CT_LEGATO, 46}, {nAs7|CT_LEGATO, 46}, {nCs8|CT_LEGATO, 91}, {nB7|CT_LEGATO, 46},
-  {nFs7, 46}, {nFs7|CT_LEGATO, 91}, {nCs8|CT_LEGATO, 46}, {nB7|CT_LEGATO, 46},
-  {nFs7|CT_LEGATO, 91}, {nE7|CT_LEGATO, 46}, {nG7, 46}, {nG7, 46}, {CT_REST, 46},
-  {nA7|CT_LEGATO, 46}, {nG7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 91}, {nE7|CT_LEGATO, 46},
-  {nD7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 91}, {nE7|CT_LEGATO, 91}, {nB6, 182}, {CT_END, 0}, // 22 Podmoskovnie Vechera (verse + chorus)
+  {nFs7, 182}, {CT_END, 0}, // 22 Podmoskovnie Vechera (opening phrase)
 };
 
 uint16_t chimeModeStart(byte target) {
@@ -1091,7 +1079,7 @@ void nextMainScreen() {
 void enterMenuItem() {
   if (podMode == 3) {                         // Save
     saveSettings();
-    showMessage(F("Saved"), 5);     // подтверждение, как у калибровки CO2
+    showMessage(F("Settings saved"), 14);     // подтверждение, как у калибровки CO2
     delay(800);
     mode = 0;
   } else if (podMode == 4) {                  // Exit
