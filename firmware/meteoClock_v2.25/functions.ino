@@ -184,6 +184,8 @@ void loadSettings() {
   if (ver < 7) v = (v == 21) ? CHIME_RANDOM : CHIME_SOUND_DEFAULT;  // нумерация изменилась
   else if (ver < 8 && v == 18) v = CHIME_RANDOM;   // в v2.23 значение 18 означало Random
   else if (ver < 9 && v == 19) v = CHIME_RANDOM;   // в v2.23 с Ode to Joy 19 = Random
+  else if (ver == 9 && v == 20) v = CHIME_RANDOM;   // в v2.23 (ver 9) 20 = Random
+  else if (ver == 10 && v == 22) v = CHIME_RANDOM;  // в v2.24 (ver 10) 22 = Random
   if (v <= CHIME_RANDOM) chimeSound = v;
 }
 
@@ -389,7 +391,7 @@ void editApply(int16_t delta) {
 
 #if (DISPLAY_TYPE == 1)
 static const char menuNames[] PROGMEM =
-  "Alarm\0Chime\0Save\0Exit\0LED Br\0LED Mode\0CO2 Calibration";
+  "Alarm\0Chime\0Save\0Exit\0LED Br\0LED Mode\0CO2 Calib";
 #else
 static const char menuNames[] PROGMEM =
   "Alarm\0Chime\0Save\0Exit\0LED Br\0LED Mode\0CO2 Calib";
@@ -614,6 +616,35 @@ static const ChimeStep chimePatterns[] PROGMEM = {
   {nC7|CT_LEGATO, 110}, {nB6|CT_LEGATO, 83}, {nFs6|CT_LEGATO, 28}, {nA6|CT_LEGATO, 55},
   {nG6|CT_LEGATO, 55}, {nF6|CT_LEGATO, 28}, {nD6, 28}, {nC6|CT_LEGATO, 110},
   {CT_END, 0}, // 19 Wedding March (Mendelssohn, main theme)
+  {CT_VOICE, 6},
+  {nE7, 15}, {CT_REST, 27},
+  {nE7|CT_LEGATO, 62}, {nGs7|CT_LEGATO, 22}, {nF7|CT_LEGATO, 19}, {nE7|CT_LEGATO, 21},
+  {nGs7, 23}, {CT_REST, 21},
+  {nGs7|CT_LEGATO, 59}, {nB7|CT_LEGATO, 20}, {nA7|CT_LEGATO, 20}, {nGs7|CT_LEGATO, 21},
+  {nA7, 11}, {CT_REST, 31},
+  {nA7|CT_LEGATO, 63}, {nC8|CT_LEGATO, 22}, {nB7|CT_LEGATO, 19}, {nA7|CT_LEGATO, 23},
+  {nGs7|CT_LEGATO, 41}, {nF7, 22}, {nF7|CT_LEGATO, 20}, {nE7, 63}, {CT_REST, 20},
+  {nGs7|CT_LEGATO, 42}, {nF7|CT_LEGATO, 21}, {nE7, 20}, {nE7, 21}, {nE7|CT_LEGATO, 41},
+  {nF7, 22}, {nF7|CT_LEGATO, 41}, {nE7|CT_LEGATO, 19}, {nD7, 20}, {nD7, 22},
+  {nD7, 43}, {nD7|CT_LEGATO, 42}, {nF7|CT_LEGATO, 35}, {nE7|CT_LEGATO, 9}, {nD7, 20},
+  {nD7|CT_LEGATO, 21}, {nA7|CT_LEGATO, 42}, {nGs7|CT_LEGATO, 39}, {nF7, 21}, {nF7|CT_LEGATO, 22},
+  {nA7, 84}, {CT_END, 0}, // 20 Hava Nagila (main theme + second phrase)
+  {CT_VOICE, 16},
+  {nA6|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7|CT_LEGATO, 38}, {nD7|CT_LEGATO, 38}, {nE7, 75},
+  {nE7|CT_LEGATO, 75}, {nF7|CT_LEGATO, 38}, {nE7|CT_LEGATO, 38}, {nF7|CT_LEGATO, 38}, {nA7|CT_LEGATO, 38},
+  {nE7|CT_LEGATO, 150}, {nD7, 75}, {nD7|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7, 75},
+  {nC7|CT_LEGATO, 75}, {nB6|CT_LEGATO, 38}, {nA6|CT_LEGATO, 38}, {nB6|CT_LEGATO, 38}, {nC7|CT_LEGATO, 38},
+  {nA6, 113}, {CT_REST, 20},
+  {nA6, 75}, {nA7, 75}, {nA7, 75}, {nA7|CT_LEGATO, 75}, {nG7|CT_LEGATO, 38},
+  {nA7|CT_LEGATO, 38}, {nG7|CT_LEGATO, 38}, {nF7|CT_LEGATO, 38}, {nE7, 150}, {CT_END, 0}, // 21 Hatikvah (opening + refrain)
+  {CT_VOICE, 24},
+  {nB6|CT_LEGATO, 46}, {nD7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 46}, {nD7|CT_LEGATO, 46},
+  {nE7|CT_LEGATO, 91}, {nD7|CT_LEGATO, 46}, {nCs7|CT_LEGATO, 46},
+  {nFs7|CT_LEGATO, 91}, {nE7|CT_LEGATO, 91},
+  {nB6|CT_LEGATO, 182},
+  {nD7|CT_LEGATO, 46}, {nFs7|CT_LEGATO, 46}, {nA7, 46}, {nA7|CT_LEGATO, 46},
+  {nB7|CT_LEGATO, 91}, {nA7|CT_LEGATO, 46}, {nG7|CT_LEGATO, 46},
+  {nFs7, 182}, {CT_END, 0}, // 22 Podmoskovnie Vechera (opening phrase)
 };
 
 uint16_t chimeModeStart(byte target) {

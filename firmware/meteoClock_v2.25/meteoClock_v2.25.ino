@@ -27,7 +27,33 @@
   - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
 */
 
-/* Версия 2.23 (набор сигналов)
+/* Версия 2.25 (Подмосковные вечера)
+  - Добавлен сигнал 22 Подмосковные вечера (~12,8 с): начальная фраза
+    (7 тактов, 18 нот); легато, повторяющиеся ноты артикулированы,
+    спад громкости CT_VOICE 24
+  - Random теперь 23, всего 23 сигнала 0..22
+  - EEPROM-версия 11: сохранённый Random из v2.24 (22) переводится в 23
+  - С экрана запуска убраны дата и время компиляции (осталась версия):
+    освободившееся место отдано новой мелодии
+  - Flash 30 628 байт (99%), RAM 917 (для 2004), свободно 92 байта
+    Для 1602 — 28 484 байта, RAM 885
+    RESET_CLOCK 1 — 29 042 байта, RAM 891
+
+  Версия 2.24 (Hava Nagila и Hatikvah)
+  - Добавлены сигналы 20 Hava Nagila (~13,1 с) и 21 Hatikvah (~17,9 с);
+    Random теперь 22, всего 22 сигнала 0..21
+  - Hava Nagila: ля минор с G#, основная тема и вторая фраза; легато внутри
+    фраз, короткие паузы в характерных синкопах, спад громкости CT_VOICE
+  - Hatikvah: ля минор, вступление и припев; легато, повторяющиеся ноты
+    артикулированы, темп 80 BPM
+  - EEPROM-версия 10: сохранённый Random (20) из v2.23 переводится в 22
+  - На 2004 пункт меню CO2 Calib короче, экран потери питания RTC упрощён
+    (2 строки); место использовано для новых мелодий
+  - Flash 30 668 байт (99%), RAM 917 (для 2004), свободно 52 байта
+    Для 1602 — 28 480 байт, RAM 885
+    RESET_CLOCK 1 — 29 126 байт, RAM 891
+
+  Версия 2.23 (набор сигналов)
   - Удалены сигналы 0 (high ping), 5 (low gong) и 7 (falling run)
   - Прежние сигналы перенумерованы 0..17; добавлены 18 Ode to Joy
     и 19 Wedding March, Random = 20
@@ -260,7 +286,7 @@
 #define ALARM_HOUR_DEFAULT 7
 #define ALARM_MIN_DEFAULT 0
 #define CHIME_SOUND_DEFAULT 0    // 0 = "дин-дон" (бывший вариант 1)
-#define CHIME_MODE_COUNT 20      // число вариантов в таблице chimePatterns
+#define CHIME_MODE_COUNT 23      // число вариантов в таблице chimePatterns
 #define CHIME_RANDOM CHIME_MODE_COUNT  // псевдоиндекс режима Random
 #define STARTUP_CHIME 3        // при запуске играет старый модем
 
@@ -322,9 +348,9 @@ byte LEDType = 0;         //  при отсутствии сохранения �
 #define EE_ALARM_MIN 19
 #define EE_FLAGS 20           // bit0 - будильник, bit1 - почасовой сигнал, bit2 - нет писка CO2
 #define EE_VERSION 21
-#define EE_CHIME_SOUND 22     // выбранный вариант почасового сигнала (0..19; 20 = Random)
+#define EE_CHIME_SOUND 22     // выбранный вариант почасового сигнала (0..22; 23 = Random)
 #define EE_MAGIC_VALUE 124
-#define EE_VERSION_VALUE 9
+#define EE_VERSION_VALUE 11
 #define FLAG_ALARM 1
 #define FLAG_CHIME 2
 #define FLAG_NO_CO2_BEEP 4    // bit2: предупреждающий писк CO2 отключён
@@ -339,8 +365,8 @@ byte alarmEditH = 0, alarmEditM = 0;             // временные часы/
 byte alarmField = 0;                             // 0=часы, 1=минуты, 2=ON/OFF
 int16_t alarmEnabled = 0;
 int16_t chimeEnabled = 0;
-int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..19 или CHIME_RANDOM)
-int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..20 = сигнал 0..19, 21 = Random
+int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..22 или CHIME_RANDOM)
+int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..23 = сигнал 0..22, 24 = Random
 uint16_t rngState = 0xACE1;                      // состояние генератора для Chime → Random
 byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота MIDI (будильник/сигнал)
 
@@ -892,7 +918,6 @@ void setup() {
     // Не подставляем время компиляции: оно вводит в заблуждение.
     // Показываем SET TIME, пока время не придёт с ПК через set_time.sh.
     timeValid = false;
-    Serial.println(F("RTC lost power: time is not set"));
   }
 
   pinMode(BACKLIGHT, OUTPUT);
@@ -922,12 +947,9 @@ void setup() {
   lcd.clear();
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.23"));
-  lcd.setCursor(0, 1); lcd.print(F("Compiled:")); lcd.print(F(__DATE__));
-  lcd.setCursor(3, 2); lcd.print(F("Time ")); lcd.print(F(__TIME__));
+  lcd.setCursor(2, 1); lcd.print(F("MeteoClock 2.25"));
 #else
-  lcd.setCursor(0, 0); lcd.print(F("v2.23")); lcd.print(F(__DATE__));
-  lcd.setCursor(4, 1); lcd.print(F(__TIME__));
+  lcd.setCursor(0, 0); lcd.print(F("v2.25"));
 #endif
   setLED();                           // применить сохранённую яркость
 #if (RESET_CLOCK == 0)
@@ -1033,15 +1055,8 @@ void setup() {
   // время, полученное из порта в начале setup(), и часы отставали на 10-30 секунд.
   if (!timeValid) {                   // RTC потерял питание: объясняем, что время надо выставить
     lcd.clear();
-#if (DISPLAY_TYPE == 1)
-    lcd.setCursor(0, 0); lcd.print(F("RTC lost power"));
-    lcd.setCursor(0, 1); lcd.print(F("Time is not set"));
-    lcd.setCursor(0, 2); lcd.print(F("Run set_time.sh"));
-    lcd.setCursor(0, 3); lcd.print(F("or send T... via USB"));
-#else
     lcd.setCursor(0, 0); lcd.print(F("RTC lost power"));
     lcd.setCursor(0, 1); lcd.print(F("Set time via USB"));
-#endif
     delay(2500);
   }
   lcd.clear();
