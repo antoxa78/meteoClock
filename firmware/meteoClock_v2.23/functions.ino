@@ -178,9 +178,12 @@ void loadSettings() {
   co2BeepEnabled = !(v & FLAG_NO_CO2_BEEP);
 
   v = EEPROM.read(EE_CHIME_SOUND);
-  if (ver < 4 && v == 13) v = CHIME_RANDOM;   // в v2.18 значение 13 означало Random
-  if (ver < 5 && v == 17) v = CHIME_RANDOM;   // в v2.21 значение 17 означало Random
-  if (ver < 6 && v == 19) v = CHIME_RANDOM;   // в v2.21 (без Morning/Carol) 19 = Random
+  if (ver < 4 && v == 13) v = 21;   // в v2.18 значение 13 означало Random
+  if (ver < 5 && v == 17) v = 21;   // в v2.21 значение 17 означало Random
+  if (ver < 6 && v == 19) v = 21;   // в v2.21 (без Morning/Carol) 19 = Random
+  if (ver < 7) v = (v == 21) ? CHIME_RANDOM : CHIME_SOUND_DEFAULT;  // нумерация изменилась
+  else if (ver < 8 && v == 18) v = CHIME_RANDOM;   // в v2.23 значение 18 означало Random
+  else if (ver < 9 && v == 19) v = CHIME_RANDOM;   // в v2.23 с Ode to Joy 19 = Random
   if (v <= CHIME_RANDOM) chimeSound = v;
 }
 
@@ -583,27 +586,34 @@ struct ChimeStep {
 };
 
 static const ChimeStep chimePatterns[] PROGMEM = {
-  {CT_VOICE, 5}, {nC8, 50}, {CT_END, 0}, // 0 high ping
-  {CT_VOICE, 8}, {nA7, 30}, {nF7, 60}, {CT_END, 0}, // 1 low doorbell
-  {CT_VOICE, 6}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nG7, 32}, {nFs7, 64}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nA7, 32}, {nG7, 64}, {nD7, 24}, {nD7, 8}, {nD8, 32}, {nB7, 32}, {nG7, 32}, {nFs7, 32}, {nE7, 64}, {nC8, 24}, {nC8, 8}, {nB7, 32}, {nG7, 32}, {nA7, 32}, {nG7, 80}, {CT_END, 0}, // 2 Happy Birthday
-  {CT_VOICE, 4}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nCs7, 25}, {nFs7, 38}, {nGs7, 12}, {nAs7, 100}, {nB7, 25}, {nB7, 25}, {nB7, 38}, {nB7, 12}, {nB7, 25}, {nAs7, 25}, {nAs7, 25}, {nAs7, 12}, {nAs7, 12}, {nAs7, 25}, {nGs7, 25}, {nGs7, 25}, {nAs7, 25}, {nGs7, 50}, {nCs7, 50}, {CT_END, 0}, // 3 Jingle Bells
-  {CT_VOICE, 0}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {nB5|CT_LEGATO, 20}, {nC6|CT_LEGATO, 20}, {CT_REST, 5}, {nD6|CT_LEGATO, 20}, {nGs6|CT_LEGATO, 20}, {CT_REST, 5}, {nE6|CT_LEGATO, 20}, {nA6|CT_LEGATO, 20}, {CT_REST, 5}, {nFs6|CT_LEGATO, 20}, {nAs6|CT_LEGATO, 20}, {CT_REST, 5}, {nC7|CT_LEGATO, 90}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 30}, {CT_REST, 5}, {nCs7|CT_LEGATO, 12}, {nFs6|CT_LEGATO, 12}, {nD7|CT_LEGATO, 12}, {nB5|CT_LEGATO, 12}, {nCs7|CT_LEGATO, 9}, {nFs6|CT_LEGATO, 9}, {nD7|CT_LEGATO, 9}, {nB5|CT_LEGATO, 9}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nCs7|CT_LEGATO, 5}, {nFs6|CT_LEGATO, 5}, {nD7|CT_LEGATO, 5}, {nB5|CT_LEGATO, 5}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nCs7|CT_LEGATO, 3}, {nFs6|CT_LEGATO, 3}, {nD7|CT_LEGATO, 3}, {nB5|CT_LEGATO, 3}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {CT_REST, 5}, {nB5|CT_LEGATO, 25}, {CT_END, 0}, // 4 old modem sound
-  {CT_VOICE, 12}, {nD7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {nA6|CT_LEGATO, 2}, {nG6, 90}, {CT_END, 0}, // 5 low gong
-  {CT_VOICE, 4}, {nG6, 4}, {nB6, 4}, {nD7, 4}, {nG7, 4}, {nB7, 4}, {nD8, 38}, {CT_END, 0}, // 6 rising run
-  {CT_VOICE, 4}, {nD8, 4}, {nB7, 4}, {nA7, 4}, {nG7, 4}, {nE7, 4}, {nD7, 38}, {CT_END, 0}, // 7 falling run
-  {CT_VOICE, 4}, {nC7, 6}, {nC8, 6}, {nG6, 6}, {nG7, 6}, {nE7, 38}, {CT_END, 0}, // 8 wide leap
-  {CT_VOICE, 8}, {nG7, 15}, {nE7, 15}, {nG7, 42}, {CT_END, 0}, // 9 ding-dong-ding
-  {CT_VOICE, 6}, {nG7, 6}, {nG7, 6}, {nC7, 46}, {CT_END, 0}, // 10 double strike
-  {CT_VOICE, 0}, {nD8, 15}, {nC8, 15}, {nE7, 30}, {nFs7, 30}, {nB7, 15}, {nA7, 15}, {nC7, 30}, {nD7, 30}, {nA7, 15}, {nG7, 15}, {nB6, 30}, {nD7, 30}, {nG7, 90}, {CT_END, 0}, // 11 Grande Valse (Nokia)
-  {CT_VOICE, 0}, {nC7, 13}, {nC7, 80}, {nB7, 10}, {nG7, 10}, {nA7, 10}, {nG7, 10}, {nE7, 10}, {nC7, 10}, {nG7, 10}, {nC7, 10}, {nF7, 10}, {nC7, 10}, {nE7, 10}, {nC7, 10}, {nD7, 10}, {nC7, 20}, {CT_END, 0}, // 12 Jumping (Nokia)
-  {CT_VOICE, 10}, {nGs7, 33}, {nFs7, 33}, {nE7, 33}, {nB6, 70}, {CT_END, 0}, // 13 Westminster short
-  {CT_VOICE, 10}, {nE7, 33}, {nGs7, 33}, {nFs7, 33}, {nB6, 56}, {nE7, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 56}, {nGs7, 33}, {nE7, 33}, {nFs7, 33}, {nB6, 56}, {nB6, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 100}, {CT_END, 0}, // 14 Westminster full (Big Ben)
-  {CT_VOICE, 0}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 56}, {CT_END, 0}, // 15 Cuckoo
-  {CT_VOICE, 12}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 103}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 190}, {CT_END, 0}, // 16 Beethoven 5th opening
-  {CT_VOICE, 0}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 50}, {CT_END, 0}, // 17 Time signal (six pips)
-  {CT_VOICE, 4}, {nE7, 22}, {nCs7, 22}, {nE7, 22}, {nDs7, 22}, {nC8, 22}, {nCs7, 22}, {nB7, 22}, {nB7, 22}, {nB7, 48}, {nAs7, 22}, {nAs7, 22}, {nAs7, 48}, {nA7, 22}, {nA7, 22}, {nA7, 48}, {nGs7, 22}, {nCs7, 22}, {nA7, 22}, {nCs7, 22}, {nGs7, 45}, {CT_END, 0}, // 18 Sugar Plum Fairy
-  {CT_VOICE, 0}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nA7|CT_LEGATO, 20}, {nB7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nB7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7, 50}, {CT_END, 0}, // 19 Morning Mood
-  {CT_VOICE, 4}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nC7, 17}, {nC7, 17}, {nC7, 17}, {nAs7, 17}, {nGs7, 17}, {nG7, 17}, {nG7, 17}, {nG7, 19}, {nF7, 17}, {nDs7, 17}, {nF7, 17}, {nF7, 17}, {nF7, 17}, {nG7, 17}, {nF7, 17}, {nC7, 30}, {CT_END, 0}, // 20 Carol of the Bells
+  {CT_VOICE, 8}, {nA7, 30}, {nF7, 60}, {CT_END, 0}, // 0 low doorbell
+  {CT_VOICE, 6}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nG7, 32}, {nFs7, 64}, {nD7, 24}, {nD7, 8}, {nE7, 32}, {nD7, 32}, {nA7, 32}, {nG7, 64}, {nD7, 24}, {nD7, 8}, {nD8, 32}, {nB7, 32}, {nG7, 32}, {nFs7, 32}, {nE7, 64}, {nC8, 24}, {nC8, 8}, {nB7, 32}, {nG7, 32}, {nA7, 32}, {nG7, 80}, {CT_END, 0}, // 1 Happy Birthday
+  {CT_VOICE, 4}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nAs6, 25}, {nAs6, 50}, {nAs6, 25}, {nCs7, 25}, {nFs7, 38}, {nGs7, 12}, {nAs7, 100}, {nB7, 25}, {nB7, 25}, {nB7, 38}, {nB7, 12}, {nB7, 25}, {nAs7, 25}, {nAs7, 25}, {nAs7, 12}, {nAs7, 12}, {nAs7, 25}, {nGs7, 25}, {nGs7, 25}, {nAs7, 25}, {nGs7, 50}, {nCs7, 50}, {CT_END, 0}, // 2 Jingle Bells
+  {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 20}, {nE6|CT_LEGATO, 20}, {nC7|CT_LEGATO, 30}, {CT_REST, 5}, {nCs7|CT_LEGATO, 12}, {nFs6|CT_LEGATO, 12}, {nD7|CT_LEGATO, 12}, {nB5|CT_LEGATO, 12}, {nCs7|CT_LEGATO, 9}, {nFs6|CT_LEGATO, 9}, {nD7|CT_LEGATO, 9}, {nB5|CT_LEGATO, 9}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nAs7|CT_LEGATO, 7}, {nC7|CT_LEGATO, 7}, {nCs7|CT_LEGATO, 5}, {nFs6|CT_LEGATO, 5}, {nD7|CT_LEGATO, 5}, {nB5|CT_LEGATO, 5}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nAs7|CT_LEGATO, 4}, {nC7|CT_LEGATO, 4}, {nCs7|CT_LEGATO, 3}, {nFs6|CT_LEGATO, 3}, {nD7|CT_LEGATO, 3}, {nB5|CT_LEGATO, 3}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {nAs7|CT_LEGATO, 2}, {nC7|CT_LEGATO, 2}, {CT_REST, 5}, {nB5|CT_LEGATO, 25}, {CT_END, 0}, // 3 old modem sound (~3.7 s, beginning cut)
+  {CT_VOICE, 4}, {nG6, 4}, {nB6, 4}, {nD7, 4}, {nG7, 4}, {nB7, 4}, {nD8, 38}, {CT_END, 0}, // 4 rising run
+  {CT_VOICE, 4}, {nC7, 6}, {nC8, 6}, {nG6, 6}, {nG7, 6}, {nE7, 38}, {CT_END, 0}, // 5 wide leap
+  {CT_VOICE, 8}, {nG7, 15}, {nE7, 15}, {nG7, 42}, {CT_END, 0}, // 6 ding-dong-ding
+  {CT_VOICE, 6}, {nG7, 6}, {nG7, 6}, {nC7, 46}, {CT_END, 0}, // 7 double strike
+  {CT_VOICE, 0}, {nD8, 15}, {nC8, 15}, {nE7, 30}, {nFs7, 30}, {nB7, 15}, {nA7, 15}, {nC7, 30}, {nD7, 30}, {nA7, 15}, {nG7, 15}, {nB6, 30}, {nD7, 30}, {nG7, 90}, {CT_END, 0}, // 8 Grande Valse (Nokia)
+  {CT_VOICE, 0}, {nC7, 13}, {nC7, 80}, {nB7, 10}, {nG7, 10}, {nA7, 10}, {nG7, 10}, {nE7, 10}, {nC7, 10}, {nG7, 10}, {nC7, 10}, {nF7, 10}, {nC7, 10}, {nE7, 10}, {nC7, 10}, {nD7, 10}, {nC7, 20}, {CT_END, 0}, // 9 Jumping (Nokia)
+  {CT_VOICE, 10}, {nGs7, 33}, {nFs7, 33}, {nE7, 33}, {nB6, 70}, {CT_END, 0}, // 10 Westminster short
+  {CT_VOICE, 10}, {nE7, 33}, {nGs7, 33}, {nFs7, 33}, {nB6, 56}, {nE7, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 56}, {nGs7, 33}, {nE7, 33}, {nFs7, 33}, {nB6, 56}, {nB6, 33}, {nFs7, 33}, {nGs7, 33}, {nE7, 100}, {CT_END, 0}, // 11 Westminster full (Big Ben)
+  {CT_VOICE, 0}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 34}, {CT_REST, 38}, {nG7, 18}, {nE7, 56}, {CT_END, 0}, // 12 Cuckoo
+  {CT_VOICE, 12}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 103}, {nG7, 15}, {nG7, 15}, {nG7, 15}, {nDs7, 83}, {nF7, 15}, {nF7, 15}, {nF7, 15}, {nD7, 190}, {CT_END, 0}, // 13 Beethoven 5th opening
+  {CT_VOICE, 0}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 10}, {CT_REST, 90}, {nB6|CT_LEGATO, 50}, {CT_END, 0}, // 14 Time signal (six pips)
+  {CT_VOICE, 4}, {nE7, 22}, {nCs7, 22}, {nE7, 22}, {nDs7, 22}, {nC8, 22}, {nCs7, 22}, {nB7, 22}, {nB7, 22}, {nB7, 48}, {nAs7, 22}, {nAs7, 22}, {nAs7, 48}, {nA7, 22}, {nA7, 22}, {nA7, 48}, {nGs7, 22}, {nCs7, 22}, {nA7, 22}, {nCs7, 22}, {nGs7, 45}, {CT_END, 0}, // 15 Sugar Plum Fairy
+  {CT_VOICE, 0}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nFs7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nA7|CT_LEGATO, 20}, {nB7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nB7, 36}, {CT_REST, 6}, {nA7|CT_LEGATO, 20}, {nFs7|CT_LEGATO, 20}, {nE7|CT_LEGATO, 20}, {nD7, 50}, {CT_END, 0}, // 16 Morning Mood
+  {CT_VOICE, 4}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nDs7, 17}, {nD7, 17}, {nDs7, 17}, {nC7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nG7, 17}, {nF7, 17}, {nG7, 17}, {nDs7, 19}, {nC7, 17}, {nC7, 17}, {nC7, 17}, {nAs7, 17}, {nGs7, 17}, {nG7, 17}, {nG7, 17}, {nG7, 19}, {nF7, 17}, {nDs7, 17}, {nF7, 17}, {nF7, 17}, {nF7, 17}, {nG7, 17}, {nF7, 17}, {nC7, 30}, {CT_END, 0}, // 17 Carol of the Bells
+  {CT_VOICE, 4},
+  {nFs7, 35}, {nFs7|CT_LEGATO, 35}, {nG7|CT_LEGATO, 35}, {nA7, 35},
+  {nA7|CT_LEGATO, 35}, {nG7|CT_LEGATO, 35}, {nFs7|CT_LEGATO, 35}, {nE7|CT_LEGATO, 35},
+  {nD7, 35}, {nD7|CT_LEGATO, 35}, {nE7|CT_LEGATO, 35}, {nFs7, 35},
+  {nFs7|CT_LEGATO, 52}, {nE7, 18}, {nE7|CT_LEGATO, 70},
+  {CT_END, 0}, // 18 Ode to Joy (Beethoven, opening phrase)
+  {CT_VOICE, 4},
+  {nC7|CT_LEGATO, 110}, {nB6|CT_LEGATO, 83}, {nFs6|CT_LEGATO, 28}, {nA6|CT_LEGATO, 55},
+  {nG6|CT_LEGATO, 55}, {nF6|CT_LEGATO, 28}, {nD6, 28}, {nC6|CT_LEGATO, 110},
+  {CT_END, 0}, // 19 Wedding March (Mendelssohn, main theme)
 };
 
 uint16_t chimeModeStart(byte target) {

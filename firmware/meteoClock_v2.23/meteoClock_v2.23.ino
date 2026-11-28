@@ -27,7 +27,24 @@
   - Возвращаем RESET_CLOCK 0 и прошиваемся ещё раз
 */
 
-/* Версия 2.22 (звук мелодий и сигналов)
+/* Версия 2.23 (набор сигналов)
+  - Удалены сигналы 0 (high ping), 5 (low gong) и 7 (falling run)
+  - Прежние сигналы перенумерованы 0..17; добавлены 18 Ode to Joy
+    и 19 Wedding March, Random = 20
+  - Старый модем (3) укорочен с ~7,2 до ~3,7 с: срезано начало,
+    остались чередование E6/C7 и быстрый нисходящий пассаж
+  - Ode to Joy (18): D-dur, ~5,6 с, первая узнаваемая фраза;
+    легато и артикуляция повторяющихся нот
+  - Wedding March (19, Mendelssohn): ~5 с, главная тема в C-dur,
+    легато и артикуляция повторяющихся нот
+  - По умолчанию играет 0 — прежний «дин-дон» (бывший сигнал 1)
+  - При первом запуске сохранённый сигнал сбрасывается на 0: нумерация
+    изменилась; режим Random сохраняется (EEPROM-версия 9)
+  - Flash 30 622 байта (99%), RAM 917 байт (для 2004)
+    Для 1602 — 28 346 байт, RAM 885 байт
+    RESET_CLOCK 1 — 29 194 байта, RAM 891 байт
+
+  Версия 2.22 (звук мелодий и сигналов)
   - Строй: ноты задаются номерами MIDI, период считается из таблицы одной октавы
     с подбором предделителя Timer2; ошибка высоты <= ~7 центов (раньше до 50,
     часть нот звучала фальшиво)
@@ -242,10 +259,10 @@
 #define HUMIDITY_CORRECTION 0 // поправка влажности, %
 #define ALARM_HOUR_DEFAULT 7
 #define ALARM_MIN_DEFAULT 0
-#define CHIME_SOUND_DEFAULT 1    // 1 = "дин-дон" (вариант A)
-#define CHIME_MODE_COUNT 21      // число вариантов в таблице chimePatterns
+#define CHIME_SOUND_DEFAULT 0    // 0 = "дин-дон" (бывший вариант 1)
+#define CHIME_MODE_COUNT 20      // число вариантов в таблице chimePatterns
 #define CHIME_RANDOM CHIME_MODE_COUNT  // псевдоиндекс режима Random
-#define STARTUP_CHIME 4        // при запуске играет старый модем
+#define STARTUP_CHIME 3        // при запуске играет старый модем
 
 // управление яркостью
 byte LED_BRIGHT = 10;         // при отсутствии сохранения в EEPROM: яркость светодиода СО2 (0 - 10) (коэффициент настраиваемой яркости индикатора по умолчанию, если нет сохранения и не автоматическая регулировка (с)НР)
@@ -305,9 +322,9 @@ byte LEDType = 0;         //  при отсутствии сохранения �
 #define EE_ALARM_MIN 19
 #define EE_FLAGS 20           // bit0 - будильник, bit1 - почасовой сигнал, bit2 - нет писка CO2
 #define EE_VERSION 21
-#define EE_CHIME_SOUND 22     // выбранный вариант почасового сигнала (0..20; 21 = Random)
+#define EE_CHIME_SOUND 22     // выбранный вариант почасового сигнала (0..19; 20 = Random)
 #define EE_MAGIC_VALUE 124
-#define EE_VERSION_VALUE 6
+#define EE_VERSION_VALUE 9
 #define FLAG_ALARM 1
 #define FLAG_CHIME 2
 #define FLAG_NO_CO2_BEEP 4    // bit2: предупреждающий писк CO2 отключён
@@ -322,8 +339,8 @@ byte alarmEditH = 0, alarmEditM = 0;             // временные часы/
 byte alarmField = 0;                             // 0=часы, 1=минуты, 2=ON/OFF
 int16_t alarmEnabled = 0;
 int16_t chimeEnabled = 0;
-int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..20 или CHIME_RANDOM)
-int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..21 = сигнал 0..20, 22 = Random
+int16_t chimeSound = CHIME_SOUND_DEFAULT;        // выбранный вариант сигнала (0..19 или CHIME_RANDOM)
+int16_t chimeSel = 0;                            // редактор Chime: 0=OFF, 1..20 = сигнал 0..19, 21 = Random
 uint16_t rngState = 0xACE1;                      // состояние генератора для Chime → Random
 byte buzzerPlayIdx = BUZZER_FREQ_IDX;            // текущая нота MIDI (будильник/сигнал)
 
@@ -905,11 +922,11 @@ void setup() {
   lcd.clear();
   lcdReady = true;
 #if (DISPLAY_TYPE == 1)
-  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.22"));
+  lcd.setCursor(2, 0); lcd.print(F("MeteoClock v2.23"));
   lcd.setCursor(0, 1); lcd.print(F("Compiled:")); lcd.print(F(__DATE__));
   lcd.setCursor(3, 2); lcd.print(F("Time ")); lcd.print(F(__TIME__));
 #else
-  lcd.setCursor(0, 0); lcd.print(F("v2.22")); lcd.print(F(__DATE__));
+  lcd.setCursor(0, 0); lcd.print(F("v2.23")); lcd.print(F(__DATE__));
   lcd.setCursor(4, 1); lcd.print(F(__TIME__));
 #endif
   setLED();                           // применить сохранённую яркость
